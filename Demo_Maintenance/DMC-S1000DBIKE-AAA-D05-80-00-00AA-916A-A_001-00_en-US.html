@@ -1,0 +1,2235 @@
+﻿<html lang="en" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <head>
+    <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bicycle - Maintenance Allocation Chart</title>
+    <style>
+          :root {
+            --bg: #f4f7fb;
+            --paper: #ffffff;
+            --ink: #172033;
+            --muted: #5b6b84;
+            --line: #dbe4f1;
+            --head: #153f74;
+            --head-2: #2a68ad;
+            --chip: #e8f1ff;
+          }
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            background: radial-gradient(circle at 80% 0%, #dcecff 0%, var(--bg) 46%);
+            color: var(--ink);
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            line-height: 1.45;
+          }
+          .hero {
+            padding: 20px 24px;
+            color: #fff;
+            background: linear-gradient(120deg, var(--head) 0%, var(--head-2) 100%);
+            border-bottom: 4px solid #0f2e55;
+          }
+          .hero h1 {
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.2;
+          }
+          .hero p {
+            margin: 8px 0 0;
+            font-size: 14px;
+            opacity: 0.95;
+          }
+          .wrap {
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: 18px;
+          }
+          .card {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(13, 33, 62, 0.08);
+            margin-bottom: 14px;
+            overflow: hidden;
+          }
+          .card h2 {
+            margin: 0;
+            padding: 12px 14px;
+            font-size: 18px;
+            background: #f0f5fc;
+            border-bottom: 1px solid var(--line);
+          }
+          .card .inner {
+            padding: 14px;
+          }
+          .grid {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          }
+          .kv {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 10px;
+            background: #fbfdff;
+          }
+          .kv .k {
+            color: var(--muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+          }
+          .kv .v {
+            font-size: 15px;
+            margin-top: 2px;
+            word-break: break-word;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+          }
+          th, td {
+            border: 1px solid var(--line);
+            padding: 7px 8px;
+            vertical-align: top;
+            text-align: left;
+          }
+          th {
+            background: #eef4fb;
+            font-weight: 600;
+            white-space: nowrap;
+          }
+          .muted { color: var(--muted); }
+          .chip {
+            display: inline-block;
+            margin: 0 4px 4px 0;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--chip);
+            border: 1px solid #c8dbfb;
+            font-size: 12px;
+          }
+          .task {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            margin-bottom: 10px;
+            overflow: hidden;
+          }
+          .task-head {
+            background: #f6faff;
+            border-bottom: 1px solid var(--line);
+            padding: 10px;
+            font-size: 14px;
+            font-weight: 600;
+          }
+          .task-body {
+            padding: 10px;
+          }
+          ul {
+            margin: 8px 0;
+            padding-left: 18px;
+          }
+          .small { font-size: 12px; }
+          a { color: #0f4ea3; text-decoration: none; }
+          a:hover { text-decoration: underline; }
+          .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+          }
+          .filter-bar label { font-weight: 600; }
+          .filter-bar select {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 6px 10px;
+            background: #fff;
+            color: var(--ink);
+          }
+          @media (max-width: 780px) {
+            .hero h1 { font-size: 20px; }
+            .wrap { padding: 12px; }
+          }
+        </style>
+  </head>
+  <body>
+    <div class="hero">
+      <h1>Bicycle - Maintenance Allocation Chart</h1>
+      <p>Issue 001 / In work 00 / Language en-US</p>
+    </div>
+    <div class="wrap">
+      <div class="card">
+        <h2>Document Metadata</h2>
+        <div class="inner">
+          <div class="grid">
+            <div class="kv">
+              <div class="k">Model</div>
+              <div class="v">S1000DBIKE</div>
+            </div>
+            <div class="kv">
+              <div class="k">System</div>
+              <div class="v">D05</div>
+            </div>
+            <div class="kv">
+              <div class="k">Subsystem</div>
+              <div class="v">8.0</div>
+            </div>
+            <div class="kv">
+              <div class="k">Info Code</div>
+              <div class="v">916A</div>
+            </div>
+            <div class="kv">
+              <div class="k">Issue Date</div>
+              <div class="v">2016-12-31</div>
+            </div>
+            <div class="kv">
+              <div class="k">Security Class</div>
+              <div class="v">01</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Reasons For Update</h2>
+        <div class="inner">
+          <ul>
+            <li>rfu-001: maintenance allocations | 2009-75DE</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Applicability</h2>
+        <div class="inner">
+          <div class="task">
+            <div class="task-head">Default Applicability</div>
+            <div class="task-body">Mountain bicycle and (Mountain storm Mk1 or Brook trekker Mk9)</div>
+          </div>
+          <div class="task">
+            <div class="task-head">Applic ID: MK1MK9</div>
+            <div class="task-body">Mountain bicycle and (Mountain storm Mk1 or Brook trekker Mk9)</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Applicability Filter</h2>
+        <div class="inner">
+          <div class="filter-bar"><label for="applicFilter">Show data for:</label><select id="applicFilter"><option value="ALL">All applicability</option>
+              <option value="MK1MK9">MK1MK9</option></select><span class="small muted" id="applicFilterStatus">Showing all applicability</span></div>
+          <p class="small muted">Filter applies to Time Limits and Scheduled Maintenance Tasks.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Maintenance Allocation Chart</h2>
+        <div class="inner">
+          <p><strong>Allocation Title:</strong>Bicycle</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Component</th>
+                <th>Skill</th>
+                <th>Function</th>
+                <th>Level</th>
+                <th>Tools</th>
+                <th>Remarks</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>00</td>
+                <td>Frame</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0101</td>
+                <td>Front Wheel</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl006">tl006</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl005">tl005</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl005">tl005</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0102</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl003">tl003</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0201</td>
+                <td>Rear Wheel</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl006">tl006</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl005">tl005</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl005">tl005</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0202</td>
+                <td>Tire</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl002">tl002</a></div>
+                  <div><a href="#tl003">tl003</a></div>
+                  <div><a href="#tl006">tl006</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>03</td>
+                <td>Seat and Seat Post</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>03</td>
+                <td>Seat and Seat Post</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>03</td>
+                <td>Seat and Seat Post</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>03</td>
+                <td>Seat and Seat Post</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>04</td>
+                <td>Handlebars</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td></td>
+                <td>
+                  <div><a href="#A1">A1</a></div>
+                </td>
+              </tr>
+              <tr>
+                <td>04</td>
+                <td>Handlebars</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>04</td>
+                <td>Handlebars</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.1</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>04</td>
+                <td>Handlebars</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>04</td>
+                <td>Handlebars</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>05</td>
+                <td>Handle Bar Stem</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>05</td>
+                <td>Handle Bar Stem</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>05</td>
+                <td>Handle Bar Stem</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>06</td>
+                <td>Cranks</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>06</td>
+                <td>Cranks</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>06</td>
+                <td>Cranks</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>06</td>
+                <td>Cranks</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>07</td>
+                <td>Pedals</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>08</td>
+                <td>Chain</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft06</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft10</td>
+                <td>
+                  <div>ml02: 2.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0901</td>
+                <td>Gears-Front chain ring</td>
+                <td>sk02</td>
+                <td>ft11</td>
+                <td>
+                  <div>ml02: 2.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft06</td>
+                <td>
+                  <div>ml02: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml02: 2.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft10</td>
+                <td>
+                  <div>ml02: 3.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0902</td>
+                <td>Gears-Rear freewheel</td>
+                <td>sk02</td>
+                <td>ft11</td>
+                <td>
+                  <div>ml02: 4.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml02: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft06</td>
+                <td>
+                  <div>ml02: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft10</td>
+                <td>
+                  <div>ml02: 3.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0903</td>
+                <td>Gears-Derailleurs</td>
+                <td>sk02</td>
+                <td>ft11</td>
+                <td>
+                  <div>ml02: 4.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft06</td>
+                <td>
+                  <div>ml02: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml02: 1.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0904</td>
+                <td>Gears-Shift levers</td>
+                <td>sk02</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml02: 1.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml02: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>0905</td>
+                <td>Gears-Cables</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 2.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                  <div><a href="#tl007">tl007</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1001</td>
+                <td>Brakes-Handlebar actuators</td>
+                <td>sk01</td>
+                <td>ft09</td>
+                <td>
+                  <div>ml01: 1.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.4</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1002</td>
+                <td>Brakes-Cables</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.5</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1003</td>
+                <td>Brakes-Calipers</td>
+                <td>sk02</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 1.0</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft01</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft02</td>
+                <td>
+                  <div>ml01: 0.2</div>
+                </td>
+                <td></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft03</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft04</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft05</td>
+                <td>
+                  <div>ml01: 0.3</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft07</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>1005</td>
+                <td>Brakes-Pads</td>
+                <td>sk01</td>
+                <td>ft08</td>
+                <td>
+                  <div>ml01: 0.8</div>
+                </td>
+                <td>
+                  <div><a href="#tl001">tl001</a></div>
+                  <div><a href="#tl004">tl004</a></div>
+                </td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+          <h3>Tools Legend</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool ID</th>
+                <th>Code</th>
+                <th>Name</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr id="tl001">
+                <td>tl001</td>
+                <td>TL01</td>
+                <td>Specialist Toolset</td>
+              </tr>
+              <tr id="tl002">
+                <td>tl002</td>
+                <td>TL02</td>
+                <td>Foot Pump</td>
+              </tr>
+              <tr id="tl003">
+                <td>tl003</td>
+                <td>TL03</td>
+                <td>Patch Kit</td>
+              </tr>
+              <tr id="tl004">
+                <td>tl004</td>
+                <td>TL04</td>
+                <td>Allen wrench set</td>
+              </tr>
+              <tr id="tl005">
+                <td>tl005</td>
+                <td>TL05</td>
+                <td>Tire Lever</td>
+              </tr>
+              <tr id="tl006">
+                <td>tl006</td>
+                <td>TL06</td>
+                <td>Tire Pressure Gauge</td>
+              </tr>
+              <tr id="tl007">
+                <td>tl007</td>
+                <td>TL07</td>
+                <td>Test Stand</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Additional Sections</h2>
+        <div class="inner">
+          <ul>
+            <li>toolsList</li>
+            <li>remarksList</li>
+          </ul>
+        </div>
+      </div>
+    </div><script>
+          (function () {
+            var select = document.getElementById('applicFilter');
+            if (!select) {
+              return;
+            }
+
+            var rowsAndCards = document.querySelectorAll('[data-applic]');
+            var status = document.getElementById('applicFilterStatus');
+
+            function applyFilter() {
+              var selected = select.value;
+              for (var i = 0; i < rowsAndCards.length; i++) {
+                var el = rowsAndCards[i];
+                var app = el.getAttribute('data-applic') || 'DEFAULT';
+                var show = (selected === 'ALL' || app === selected);
+                el.style.display = show ? '' : 'none';
+              }
+
+              if (status) {
+                status.textContent = (selected === 'ALL') ? 'Showing all applicability' : ('Showing ' + selected);
+              }
+            }
+
+            select.addEventListener('change', applyFilter);
+            applyFilter();
+          })();
+        </script></body>
+</html>

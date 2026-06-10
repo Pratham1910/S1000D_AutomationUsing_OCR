@@ -1,0 +1,315 @@
+﻿<html lang="en" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <head>
+    <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bicycle - Scheduled maintenance checks</title>
+    <style>
+          :root {
+            --bg: #f4f7fb;
+            --paper: #ffffff;
+            --ink: #172033;
+            --muted: #5b6b84;
+            --line: #dbe4f1;
+            --head: #153f74;
+            --head-2: #2a68ad;
+            --chip: #e8f1ff;
+          }
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            background: radial-gradient(circle at 80% 0%, #dcecff 0%, var(--bg) 46%);
+            color: var(--ink);
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            line-height: 1.45;
+          }
+          .hero {
+            padding: 20px 24px;
+            color: #fff;
+            background: linear-gradient(120deg, var(--head) 0%, var(--head-2) 100%);
+            border-bottom: 4px solid #0f2e55;
+          }
+          .hero h1 {
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.2;
+          }
+          .hero p {
+            margin: 8px 0 0;
+            font-size: 14px;
+            opacity: 0.95;
+          }
+          .wrap {
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: 18px;
+          }
+          .card {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(13, 33, 62, 0.08);
+            margin-bottom: 14px;
+            overflow: hidden;
+          }
+          .card h2 {
+            margin: 0;
+            padding: 12px 14px;
+            font-size: 18px;
+            background: #f0f5fc;
+            border-bottom: 1px solid var(--line);
+          }
+          .card .inner {
+            padding: 14px;
+          }
+          .grid {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          }
+          .kv {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 10px;
+            background: #fbfdff;
+          }
+          .kv .k {
+            color: var(--muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+          }
+          .kv .v {
+            font-size: 15px;
+            margin-top: 2px;
+            word-break: break-word;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+          }
+          th, td {
+            border: 1px solid var(--line);
+            padding: 7px 8px;
+            vertical-align: top;
+            text-align: left;
+          }
+          th {
+            background: #eef4fb;
+            font-weight: 600;
+            white-space: nowrap;
+          }
+          .muted { color: var(--muted); }
+          .chip {
+            display: inline-block;
+            margin: 0 4px 4px 0;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--chip);
+            border: 1px solid #c8dbfb;
+            font-size: 12px;
+          }
+          .task {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            margin-bottom: 10px;
+            overflow: hidden;
+          }
+          .task-head {
+            background: #f6faff;
+            border-bottom: 1px solid var(--line);
+            padding: 10px;
+            font-size: 14px;
+            font-weight: 600;
+          }
+          .task-body {
+            padding: 10px;
+          }
+          ul {
+            margin: 8px 0;
+            padding-left: 18px;
+          }
+          .small { font-size: 12px; }
+          a { color: #0f4ea3; text-decoration: none; }
+          a:hover { text-decoration: underline; }
+          .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+          }
+          .filter-bar label { font-weight: 600; }
+          .filter-bar select {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 6px 10px;
+            background: #fff;
+            color: var(--ink);
+          }
+          @media (max-width: 780px) {
+            .hero h1 { font-size: 20px; }
+            .wrap { padding: 12px; }
+          }
+        </style>
+  </head>
+  <body>
+    <div class="hero">
+      <h1>Bicycle - Scheduled maintenance checks</h1>
+      <p>Issue 008 / In work 00 / Language en-US</p>
+    </div>
+    <div class="wrap">
+      <div class="card">
+        <h2>Document Metadata</h2>
+        <div class="inner">
+          <div class="grid">
+            <div class="kv">
+              <div class="k">Model</div>
+              <div class="v">S1000DBIKE</div>
+            </div>
+            <div class="kv">
+              <div class="k">System</div>
+              <div class="v">D05</div>
+            </div>
+            <div class="kv">
+              <div class="k">Subsystem</div>
+              <div class="v">4.0</div>
+            </div>
+            <div class="kv">
+              <div class="k">Info Code</div>
+              <div class="v">000A</div>
+            </div>
+            <div class="kv">
+              <div class="k">Issue Date</div>
+              <div class="v">2016-12-31</div>
+            </div>
+            <div class="kv">
+              <div class="k">Security Class</div>
+              <div class="v">01</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Reasons For Update</h2>
+        <div class="inner">
+          <ul>
+            <li>rfu-general: S1000D upissued</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Applicability</h2>
+        <div class="inner">
+          <div class="task">
+            <div class="task-head">Default Applicability</div>
+            <div class="task-body">Mountain bicycle and (Mountain storm Mk1 or Brook trekker Mk9)</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Applicability Filter</h2>
+        <div class="inner">
+          <div class="filter-bar"><label for="applicFilter">Show data for:</label><select id="applicFilter"><option value="ALL">All applicability</option></select><span class="small muted" id="applicFilterStatus">Showing all applicability</span></div>
+          <p class="small muted">Filter applies to Time Limits and Scheduled Maintenance Tasks.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Inspection Task Groups</h2>
+        <div class="inner">
+          <div class="task">
+            <div class="task-head">Group </div>
+            <div class="task-body">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Seq</th>
+                    <th>Task Name</th>
+                    <th>Description</th>
+                    <th>Reference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>001</td>
+                    <td>Inspect Brakes</td>
+                    <td>To do an inspection of the brakes</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>002</td>
+                    <td>Inspect brakes installation</td>
+                    <td>To do an inspection of the brakes installation</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>003</td>
+                    <td>Check Tire Pressure</td>
+                    <td>To do a check of the tire pressure</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>004</td>
+                    <td>Inspect wheel condition</td>
+                    <td>To do an inspection of the wheel condition</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>005</td>
+                    <td>Check headset bearings</td>
+                    <td>To do a check of the headset bearings</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>006</td>
+                    <td>Carry out chain checks</td>
+                    <td>To do a check of the chain</td>
+                    <td>
+                      <div class="small"><a href="DMC-S1000DBIKE-AAA-D00-00-00-00AA-121A-A.html">D00-121A</a></div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><script>
+          (function () {
+            var select = document.getElementById('applicFilter');
+            if (!select) {
+              return;
+            }
+
+            var rowsAndCards = document.querySelectorAll('[data-applic]');
+            var status = document.getElementById('applicFilterStatus');
+
+            function applyFilter() {
+              var selected = select.value;
+              for (var i = 0; i < rowsAndCards.length; i++) {
+                var el = rowsAndCards[i];
+                var app = el.getAttribute('data-applic') || 'DEFAULT';
+                var show = (selected === 'ALL' || app === selected);
+                el.style.display = show ? '' : 'none';
+              }
+
+              if (status) {
+                status.textContent = (selected === 'ALL') ? 'Showing all applicability' : ('Showing ' + selected);
+              }
+            }
+
+            select.addEventListener('change', applyFilter);
+            applyFilter();
+          })();
+        </script></body>
+</html>

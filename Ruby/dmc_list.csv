@@ -1,0 +1,10 @@
+modelIdentCode,systemDiffCode,systemCode,subSystemCode,subSubSystemCode,assyCode,disassyCode,disassyCodeVariant,infoCode,infoCodeVariant,itemLocationCode
+AVS,H,04,1,0,0301,00,A,022,A,D
+AVS,A,23,0,0,00,00,A,040,A,D
+AVS,B,12,1,1,01,01,B,050,B,E
+AVS,H,04,1,0,0301,00,A,022,A,D
+AVS,A,23,0,0,00,00,A,040,A,D
+AVS,B,12,1,1,01,01,B,050,B,E
+AVS,H,04,1,0,0301,00,A,022,A,D
+AVS,A,23,0,0,00,00,A,040,A,D
+AVS,B,12,1,1,01,01,B,050,B,E

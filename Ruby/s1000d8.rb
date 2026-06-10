@@ -1,0 +1,1645 @@
+# Devloped By Prathamesh Naik
+# This code is a Ruby script that defines a custom Asciidoctor converter for S1000D XML documents.
+# This is Licenced under the Apache License, Version 2.0
+
+require 'asciidoctor'
+require 'asciidoctor/helpers'
+require 'json' # For parsing nested applicability from custom block
+
+module Asciidoctor
+  class Converter::S1000D < Converter::Base
+    register_for 's1000d'
+
+    (QUOTE_TAGS = {
+      monospaced: ['<verbatimText>', '</verbatimText>'],
+      emphasis: ['<emphasis emphasisType="em02">', '</emphasis>'],
+      strong: ['<emphasis emphasisType="em01">', '</emphasis>'],
+      mark: ['<changeInline changeMark="1">', '</changeInline>'],
+      superscript: ['<superScript>', '</superScript>'],
+      subscript: ['<subScript>', '</subScript>']
+    }).default = ['', '']
+
+
+    alias convert_preamble content_only
+
+    def initialize *args
+      super
+      basebackend 'xml'
+      filetype 'xml'
+      outfilesuffix '.xml'
+      htmlsyntax 'xml'
+      # Instance variables to collect definitions from blocks
+      @s1000d_applic_definitions = []
+      @s1000d_product_definitions = []
+      @s1000d_product_attribute_definitions = []
+      @global_applic_eval_hash = nil # Stores parsed JSON from the global_applicability_definition block
+    end
+
+    def common_attributes(id)
+      id ? %( id="#{id}") : ''
+    end
+
+    def applic_ref_attribute(node)
+      node.attr?('applic_ref') ? %( applicRefId="#{esc_text(node.attr('applic_ref'))}") : ''
+    end
+
+    # Escape text for XML content
+    def esc_text(text)
+      return '' if text.nil?
+      text.to_s
+          .gsub('&', '&')
+          .gsub('<', '<')
+          .gsub('>', '>')
+          .gsub('"', '"')
+    end
+
+    # For content that might already be XML (minimal escaping)
+    def esc_content(text_or_content)
+      return '' if text_or_content.nil?
+      return text_or_content unless text_or_content.is_a?(String) # If already processed
+      text_or_content.to_s
+    end
+
+    # Parse S1000D Data Module Code (DMC)
+    def parse_dmc_string(dmc_string)
+      return nil unless dmc_string && dmc_string.is_a?(String) && !dmc_string.strip.empty?
+      cleaned_dmc_string = dmc_string.split('//').first.strip
+
+      regex = /^(?:DMC-)?([A-Z0-9]{2,17})-([A-Z0-9]{1})-([A-Z0-9]{2,4})-([A-Z0-9]{1,2})-([A-Z0-9]{1,2})-([A-Z0-9]{2,4})-([A-Z0-9]{2})-([A-Z0-9]{1,4})-([A-Z0-9]{3})-([A-Z0-9]{1})-([A-Z0-9]{1})$/i
+      match = regex.match(cleaned_dmc_string)
+      if match
+          return {
+            modelIdentCode:     match[1].upcase, systemDiffCode:     match[2].upcase,
+            systemCode:         match[3].upcase, subSystemCode:      match[4].upcase,
+            subSubSystemCode:   match[5].upcase, assyCode:           match[6].upcase,
+            disassyCode:        match[7].upcase, disassyCodeVariant: match[8].upcase,
+            infoCode:           match[9].upcase, infoCodeVariant:    match[10].upcase,
+            itemLocationCode:   match[11].upcase
+          }
+      else
+          warn "asciidoctor: WARNING (parse_dmc_string): Regex DID NOT MATCH for 11-part DMC input '#{cleaned_dmc_string}'."
+          return nil
+      end
+    end
+
+    # Parse S1000D Publication Module Code (PMC)
+    def parse_pmc_string(pmc_string)
+      return nil unless pmc_string && pmc_string.is_a?(String) && !pmc_string.strip.empty?
+      cleaned_pmc_string = pmc_string.split('//').first.strip
+
+      regex = /^(?:PMC-)?([A-Z0-9]{2,17})-([A-Z0-9]{5})-([A-Z0-9]{5})-([A-Z0-9]{2})-([a-z]{2})-([A-Z]{2})-([0-9]{3})-([0-9A-Z]{2})$/i
+      match = regex.match(cleaned_pmc_string)
+      if match
+          return {
+            modelIdentCode:   match[1].upcase,
+            pmIssuer:         match[2].upcase,
+            pmNumber:         match[3].upcase,
+            pmVolume:         match[4].upcase,
+            languageIsoCode:  match[5].downcase,
+            countryIsoCode:   match[6].upcase,
+            issueNumber:      match[7],
+            inWork:           match[8].upcase
+          }
+      else
+          warn "asciidoctor: WARNING (parse_pmc_string): Regex DID NOT MATCH for 8-part PMC input '#{cleaned_pmc_string}'."
+          return nil
+      end
+    end
+
+    # Process blocks marked as '.applicdef' for <referencedApplicGroup>
+    def process_as_applic_definition(node)
+      id = node.id
+      display_text_content = node.source
+      prop_ident = node.attr('propertyident')
+      prop_values = node.attr('propertyvalues')
+      prop_type = node.attr('propertytype', 'prodattr')
+      unless id && prop_ident && prop_values
+        warn "asciidoctor: WARNING: Applicability definition (applicdef) block '#{id || 'Unnamed'}' is missing required attributes (id, propertyident, propertyvalues). Skipping."
+        return false
+      end
+      applic_xml = <<~APPLIC_DEF.strip
+        <applic id="#{esc_text(id)}">
+          <displayText>
+            <simplePara>#{esc_text(display_text_content.strip)}</simplePara>
+          </displayText>
+          <assert applicPropertyIdent="#{esc_text(prop_ident)}" applicPropertyType="#{esc_text(prop_type)}" applicPropertyValues="#{esc_text(prop_values)}"/>
+        </applic>
+      APPLIC_DEF
+      @s1000d_applic_definitions << applic_xml
+      return true
+    end
+
+    # Process blocks marked as '.productdef' for <productCrossRefTable>
+    def process_as_product_definition(node)
+      id = node.id
+      prop_ident = node.attr('propertyident')
+      prop_value = node.attr('propertyvalue')
+      prop_type = node.attr('propertytype', 'prodattr')
+      unless id && prop_ident && prop_value
+        warn "asciidoctor: WARNING: Product definition (productdef) block '#{id || 'Unnamed'}' is missing required attributes (id, propertyident, propertyvalue). Skipping."
+        return false
+      end
+      product_xml = <<~PRODUCT_DEF.strip
+        <product id="#{esc_text(id)}">
+          <assign applicPropertyIdent="#{esc_text(prop_ident)}" applicPropertyType="#{esc_text(prop_type)}" applicPropertyValue="#{esc_text(prop_value)}"/>
+        </product>
+      PRODUCT_DEF
+      @s1000d_product_definitions << product_xml
+      return true
+    end
+
+    # Process blocks marked as '.attribute_def' for <productAttributeList>
+    def process_as_product_attribute_definition(node)
+      id = node.id
+      name_text = node.attr('name')
+      descr_text = node.attr('descr')
+
+      unless id && name_text && descr_text
+        if node.context == :ulist && node.role == 'attribute_def'
+            id ||= node.id
+            name_text ||= node.attr('name')
+            descr_text ||= node.attr('descr')
+        end
+        unless id && name_text && descr_text
+            warn "asciidoctor: WARNING: Product attribute definition (attribute_def) block '#{id || 'Unnamed'}' is missing required attributes (id, name, descr) on itself. Skipping."
+            return false
+        end
+      end
+
+      enumerations_xml_parts = []
+      list_node_for_enum = nil
+      if node.context == :ulist && (node.role == 'attribute_def')
+        list_node_for_enum = node
+      elsif node.context == :open && node.blocks.first&.context == :ulist
+        list_node_for_enum = node.blocks.first
+      end
+
+      if list_node_for_enum
+        list_node_for_enum.items.each do |item|
+          value = item.text.to_s.split.first.strip
+          unless value.empty?
+            enumerations_xml_parts << "<enumeration applicPropertyValues=\"#{esc_text(value)}\"/>"
+          end
+        end
+      else
+        warn "asciidoctor: WARNING: Product attribute definition (attribute_def) block '#{id}' expects an open block with a ulist, or a ulist itself with role '.attribute_def'. No enumerations generated."
+      end
+
+      attribute_xml = "<productAttribute id=\"#{esc_text(id)}\">\n"
+      attribute_xml << "  <name>#{esc_text(name_text)}</name>\n"
+      attribute_xml << "  <descr>#{esc_text(descr_text)}</descr>\n"
+      enumerations_xml_parts.each do |enum_xml|
+        attribute_xml << "  #{enum_xml}\n"
+      end
+      attribute_xml << "</productAttribute>"
+
+      @s1000d_product_attribute_definitions << attribute_xml
+      return true
+    end
+
+    # Helper to convert simple text containing <<xref>> style inline elements
+    def convert_text_with_inline_xrefs(text, context_node)
+      return "<para/>" if text.nil? || text.strip.empty?
+
+      parts = []
+      last_idx = 0
+      text.scan(/<<([^>]+?)(?:,([^>]*?))?>>/) do |match_arr|
+        match_data = Regexp.last_match
+
+        pre_text = text[last_idx...match_data.begin(0)]
+        parts << esc_text(pre_text) unless pre_text.empty?
+
+        target_id = match_arr[0].strip
+        display_text_xref = (match_arr[1].nil? || match_arr[1].strip.empty?) ? target_id : match_arr[1].strip
+
+        target_node = context_node.document.catalog[:ids][target_id]
+        target_type_attr = determine_internal_ref_target_type(target_node, target_id)
+
+        parts << "<internalRef internalRefId=\"#{esc_text(target_id)}\"#{target_type_attr}>#{esc_text(display_text_xref)}</internalRef>"
+
+        last_idx = match_data.end(0)
+      end
+      remaining_text = text[last_idx..-1]
+      parts << esc_text(remaining_text) if remaining_text && !remaining_text.strip.empty?
+
+      "#{parts.join}"
+    end
+
+    def generate_req_cond_group_xml(section_node, for_closeout = false)
+      return "<reqCondGroup><noConds/></reqCondGroup>" unless section_node
+
+      conditions_xml_elements = []
+      has_actual_conditions = false
+
+      section_node.blocks.each_with_index do |block, idx|
+        case block.context
+        when :paragraph
+          is_likely_xref_target_only = block.id &&
+                                       section_node.document.references[:ids].key?(block.id) &&
+                                       block.source.lines.count <= 2 &&
+                                       block.source.downcase.include?(block.id.downcase)
+          unless is_likely_xref_target_only
+            warn "asciidoctor: WARNING: Paragraph found directly in '#{section_node.title}' section: '#{block.source.lines.first.strip[0,70]}...'. This paragraph will be SKIPPED."
+          end
+
+        when :ulist, :olist
+          has_actual_conditions = true
+          block.items.each do |item|
+            item_id_val = item.id
+            item_applic_ref_val = item.attr('applic_ref')
+
+            item_s1000d_id_attr_str = common_attributes(item_id_val)
+            item_s1000d_applic_attr_str = item_applic_ref_val ? %( applicRefId="#{esc_text(item_applic_ref_val)}") : ''
+
+            pm_ref_attr = item.attr('pmref')
+            dm_ref_attr = item.attr('dmref')
+
+            pm_to_parse = nil
+            dm_to_parse = nil
+
+            raw_item_text_content = item.text.to_s
+            text_for_condition = raw_item_text_content.dup.strip
+
+            if pm_ref_attr && !pm_ref_attr.strip.empty?
+              pm_to_parse = pm_ref_attr.strip
+              text_for_condition.gsub!(/\[pmref=#{Regexp.escape(pm_to_parse)}\s*\]/i, '').strip!
+              text_for_condition.gsub!(/\bpmcref:\s*#{Regexp.escape(pm_to_parse)}\b/i, '').strip!
+            elsif dm_ref_attr && !dm_ref_attr.strip.empty?
+              dm_to_parse = dm_ref_attr.strip
+              text_for_condition.gsub!(/\[dmref=#{Regexp.escape(dm_to_parse)}\s*\]/i, '').strip!
+              text_for_condition.gsub!(/\bdmcref:\s*#{Regexp.escape(dm_to_parse)}\b/i, '').strip!
+            else
+              pm_match = text_for_condition.match(/(?:pmcref:\s*)?((?:PMC-)?(?:[A-Z0-9]{2,17})-(?:[A-Z0-9]{5})-(?:[A-Z0-9]{5})-(?:[A-Z0-9]{2})-(?:[a-z]{2})-(?:[A-Z]{2})-(?:[0-9]{3})-(?:[0-9A-Z]{2}))/i)
+              if pm_match && pm_match[1]
+                pm_to_parse = pm_match[1]
+                text_for_condition.gsub!(pm_match[0], '').strip!
+              else
+                dm_match = text_for_condition.match(/(?:dmcref:\s*)?((?:DMC-)?(?:[A-Z0-9]{2,17})(?:-[A-Z0-9]{1,4}){9}-[A-Z0-9]{1})/i)
+                if dm_match && dm_match[1]
+                  dm_to_parse = dm_match[1]
+                  text_for_condition.gsub!(dm_match[0], '').strip!
+                end
+              end
+            end
+
+            if item_id_val.nil? && text_for_condition.match?(/\A\s*\[id=([^,\]\s]+)/i)
+              text_for_condition.sub!(/\A\s*\[id=[^\]]+\]\s*/i, '').strip!
+            end
+
+            if item_applic_ref_val.nil?
+              if text_for_condition.match?(/\A\s*\[(?:[^\]]*?,?\s*)?applic_ref=([^,\]\s]+)/i)
+                 text_for_condition.sub!(/\A\s*\[[^\]]+\]\s*/i, '').strip!
+              end
+            end
+
+            if text_for_condition.start_with?('[') && text_for_condition.include?(']')
+                text_for_condition.sub!(/\A\s*\[[^\]]+\]\s*/, '').strip!
+            end
+
+            req_cond_inner_xml = if item.blocks?
+                                   item.content
+                                 else
+                                   convert_text_with_inline_xrefs(text_for_condition.strip, item)
+                                 end
+
+            if pm_to_parse && !pm_to_parse.strip.empty?
+              parsed_pm_ref_code = parse_pmc_string(pm_to_parse)
+              if parsed_pm_ref_code
+                pm_ref_xml_part = <<~PM_REF_XML.strip
+                  <pmRef>
+                    <pmRefIdent>
+                      <pmCode modelIdentCode="#{esc_text(parsed_pm_ref_code[:modelIdentCode])}" pmIssuer="#{esc_text(parsed_pm_ref_code[:pmIssuer])}" pmNumber="#{esc_text(parsed_pm_ref_code[:pmNumber])}" pmVolume="#{esc_text(parsed_pm_ref_code[:pmVolume])}"/>
+                      <language languageIsoCode="#{esc_text(parsed_pm_ref_code[:languageIsoCode])}" countryIsoCode="#{esc_text(parsed_pm_ref_code[:countryIsoCode])}"/>
+                    </pmRefIdent>
+                  </pmRef>
+                PM_REF_XML
+                conditions_xml_elements << "<reqCondPm#{item_s1000d_id_attr_str}#{item_s1000d_applic_attr_str}><reqCond>#{req_cond_inner_xml}</reqCond>#{pm_ref_xml_part}</reqCondPm>"
+              else
+                warn "asciidoctor: WARNING: Invalid PMC value '#{pm_to_parse}' for item starting: '#{raw_item_text_content[0,30]}...'. Treating as reqCondNoRef."
+                conditions_xml_elements << "<reqCondNoRef#{item_s1000d_id_attr_str}#{item_s1000d_applic_attr_str}><reqCond>#{req_cond_inner_xml}</reqCond></reqCondNoRef>"
+              end
+            elsif dm_to_parse && !dm_to_parse.strip.empty?
+              parsed_dm_ref_code = parse_dmc_string(dm_to_parse)
+              if parsed_dm_ref_code
+                dm_code_attrs_xml = parsed_dm_ref_code.map { |k, v| %(#{k}="#{esc_text(v)}") }.join(' ')
+                dm_ref_xml_part = "<dmRef><dmRefIdent><dmCode #{dm_code_attrs_xml}/></dmRefIdent></dmRef>"
+                conditions_xml_elements << "<reqCondDm#{item_s1000d_id_attr_str}#{item_s1000d_applic_attr_str}><reqCond>#{req_cond_inner_xml}</reqCond>#{dm_ref_xml_part}</reqCondDm>"
+              else
+                warn "asciidoctor: WARNING: Invalid DMC value '#{dm_to_parse}' for item starting: '#{raw_item_text_content[0,30]}...'. Treating as reqCondNoRef."
+                conditions_xml_elements << "<reqCondNoRef#{item_s1000d_id_attr_str}#{item_s1000d_applic_attr_str}><reqCond>#{req_cond_inner_xml}</reqCond></reqCondNoRef>"
+              end
+            else
+              conditions_xml_elements << "<reqCondNoRef#{item_s1000d_id_attr_str}#{item_s1000d_applic_attr_str}><reqCond>#{req_cond_inner_xml}</reqCond></reqCondNoRef>"
+            end
+          end
+        when :admonition
+          has_actual_conditions = true
+          if block.attr('name')&.casecmp('note')&.zero?
+            conditions_xml_elements << block.convert
+          else
+            warn "asciidoctor: WARNING: Non-NOTE admonition (#{block.attr('name')}) found directly in '#{section_node.title}'. It will be converted but may not be valid within <reqCondGroup>."
+            conditions_xml_elements << block.convert
+          end
+        else
+          unless block.context == :thematic_break
+             warn "asciidoctor: WARNING: Unhandled block type '#{block.context}' in '#{section_node.title}' section. SKIPPED."
+          end
+        end
+      end
+
+      if !has_actual_conditions || conditions_xml_elements.empty?
+        return "<reqCondGroup><noConds/></reqCondGroup>"
+      else
+        return "<reqCondGroup>\n" + conditions_xml_elements.join("\n") + "\n</reqCondGroup>"
+      end
+    end
+
+    def generate_req_tech_info_group_xml(section_node)
+      default_no_req_tech_info = "<reqTechInfoGroup><noReqTechInfo/></reqTechInfoGroup>"
+      return default_no_req_tech_info unless section_node
+
+      tech_info_entries = []
+      found_explicit_no_info = false
+
+      section_node.blocks.each do |block|
+        break if found_explicit_no_info
+
+        if block.context == :ulist || block.context == :olist
+          block.items.each do |item|
+            dmc_to_parse = nil
+            dmc_attr_value = item.attr('dmc')
+            if dmc_attr_value && !dmc_attr_value.strip.empty?
+              dmc_to_parse = dmc_attr_value.strip
+            else
+              raw_item_text = item.text.to_s.strip
+              if raw_item_text.downcase.match?(/(no|none)\s+(required\s+)?tech(nical)?\s+info(rmation)?/i)
+                found_explicit_no_info = true
+                break
+              end
+              dmc_candidate_regex = /((?:DMC-)?(?:[A-Z0-9]+-){10}[A-Z0-9]+)/i
+              match_data = dmc_candidate_regex.match(raw_item_text)
+              if match_data && match_data[1]
+                potential_dmc_from_text = match_data[1]
+                if parse_dmc_string(potential_dmc_from_text)
+                   dmc_to_parse = potential_dmc_from_text
+                else
+                  if !raw_item_text.empty?
+                     warn "asciidoctor: INFO: Text '#{raw_item_text}' in 'Required Technical Information' contains a DMC-like pattern ('#{potential_dmc_from_text}') that did not fully parse. No 'dmc' attribute was found. Skipping item."
+                  end
+                  next
+                end
+              else
+                if !raw_item_text.empty?
+                  warn "asciidoctor: INFO: List item text '#{raw_item_text}' in 'Required Technical Information' does not appear to contain a valid DMC, and no 'dmc' attribute was found. Skipping item."
+                end
+                next
+              end
+            end
+
+            next if dmc_to_parse.nil? || dmc_to_parse.empty?
+
+            category = item.attr('category', 'ti01')
+            parsed_dmc_hash = parse_dmc_string(dmc_to_parse)
+
+            if parsed_dmc_hash
+              dm_code_attrs_xml = parsed_dmc_hash.map { |k, v| %(#{k}="#{esc_text(v)}") }.join(' ')
+              tech_info_entries << <<~TECH_INFO_ENTRY.strip
+                <reqTechInfo#{common_attributes item.id}#{applic_ref_attribute item} reqTechInfoCategory="#{esc_text(category)}">
+                  <dmRef>
+                    <dmRefIdent>
+                      <dmCode #{dm_code_attrs_xml}/>
+                    </dmRefIdent>
+                  </dmRef>
+                </reqTechInfo>
+              TECH_INFO_ENTRY
+            else
+              warn "asciidoctor: WARNING: Failed to parse '#{dmc_to_parse}' as a valid DMC in 'Required Technical Information'. Skipping."
+            end
+          end
+        elsif block.context == :paragraph
+          if block.source.strip.downcase.match?(/(no|none)\s+(required\s+)?tech(nical)?\s+info(rmation)?/i)
+            found_explicit_no_info = true
+          elsif !block.source.strip.empty?
+             warn "asciidoctor: WARNING: Non-list paragraph found in 'Required Technical Information' section: '#{block.source.lines.first.strip[0,50]}...'. Use a list for DMCs."
+          end
+        end
+      end
+
+      if found_explicit_no_info || tech_info_entries.empty?
+        return default_no_req_tech_info
+      else
+        return "<reqTechInfoGroup>\n" + tech_info_entries.join("\n") + "\n</reqTechInfoGroup>"
+      end
+    end
+
+    def determine_internal_ref_target_type(target_node, target_id_for_warning)
+      return "" unless target_node
+      case target_node.context
+      when :image # Asciidoctor ImageBlock, usually becomes <figure><graphic>
+        ' internalRefTargetType="irtt01"' # Reference to figure
+      when :block # This can be a generic block, need more specifics if it wraps a figure
+        # If node.style is 'figure' or it contains an image directly this could be irtt01
+        # For now, assuming if it's a block with an ID it's more like a section/para
+        # This might need refinement based on how you structure figures in "blocks"
+        ' internalRefTargetType="irtt07"' # Default to section-like for generic block with ID
+      when :paragraph
+        # Check if the paragraph IS a figure title or directly related to a figure
+        # This requires more context or specific roles on the paragraph.
+        # Defaulting to paragraph target type.
+        target_node.role == 'note-para' ? ' internalRefTargetType="irtt08"' : ' internalRefTargetType="irtt02"'
+      when :table
+        ' internalRefTargetType="irtt03"'
+      when :admonition
+        case target_node.attr('name')&.upcase
+        when 'NOTE';    ' internalRefTargetType="irtt08"'
+        when 'WARNING'; ' internalRefTargetType="irtt09"'
+        when 'CAUTION'; ' internalRefTargetType="irtt0A"'
+        else ''
+        end
+      when :olist_item, :ulist_item, :list_item
+        # This is key: if the target is an olist_item and its ID starts with "step_", treat as procedure step
+        (target_node.id&.downcase&.start_with?('step_') || target_node.role == 'proceduralStep') ? ' internalRefTargetType="irtt0F"' : ' internalRefTargetType="irtt04"'
+      when :section
+        ' internalRefTargetType="irtt07"'
+      else
+        warn "asciidoctor: INFO: Could not determine S1000D internalRefTargetType for ID '#{target_id_for_warning}' (context: #{target_node.context}). Omitting."
+        ''
+      end
+    end
+
+
+    def generate_req_persons_xml(section_node)
+      return "" unless section_node
+      table_node = section_node.blocks.find { |b| b.context == :table }
+      return "" unless table_node
+      personnel_entries = table_node.rows.body.map do |row_cells|
+        desc_text        = row_cells[0] ? esc_text(row_cells[0].text.strip) : "N/A"
+        category_code    = row_cells[1] ? esc_text(row_cells[1].text.strip.upcase) : "MAINT"
+        skill_level_code = row_cells[2] ? esc_text(row_cells[2].text.strip) : "01"
+        number_val       = row_cells[3] ? esc_text(row_cells[3].text.strip) : "1"
+        time_val         = row_cells[4] ? esc_text(row_cells[4].text.strip) : "0.0"
+        time_unit        = (row_cells[5] && !row_cells[5].text.strip.empty?) ? esc_text(row_cells[5].text.strip.downcase) : "h"
+        <<~PERSON_ENTRY.strip
+          <person man="#{number_val}">
+            <personCategory personCategoryCode="#{category_code}"></personCategory>
+            <personSkill skillLevelCode="#{skill_level_code}" />
+            <trade>#{desc_text}</trade>
+            <estimatedTime unitOfMeasure="#{time_unit}">#{time_val}</estimatedTime>
+          </person>
+        PERSON_ENTRY
+      end
+      personnel_entries.empty? ? "" : "<reqPersons>\n" + personnel_entries.join("\n") + "\n</reqPersons>"
+    end
+
+    def generate_table_based_req_list(section_node, list_tag, group_tag, individual_item_tag, no_item_tag, cols_map)
+      return "<#{list_tag}>#{no_item_tag}</#{list_tag}>" unless section_node
+      table_node = section_node.blocks.find { |b| b.context == :table }
+
+      if !table_node
+        if section_node.blocks.length == 1 && section_node.blocks.first.context == :paragraph
+          content = section_node.blocks.first.source.downcase
+          if content.include?("no ") && (content.include?(individual_item_tag.downcase) || content.include?(list_tag.downcase.gsub(/^req|s$/,'')))
+            return "<#{list_tag}>#{no_item_tag}</#{list_tag}>"
+          end
+        end
+        return "<#{list_tag}>#{no_item_tag}</#{list_tag}>"
+      end
+
+      items_xml = table_node.rows.body.each_with_index.map do |row_cells, idx|
+        name_cell_idx = cols_map[:name]
+        attr_cell = row_cells[name_cell_idx]
+        item_id_attr = attr_cell ? common_attributes(attr_cell.id || "#{individual_item_tag}-#{idx}") : common_attributes("#{individual_item_tag}-#{idx}")
+        item_applic_attr = attr_cell ? applic_ref_attribute(attr_cell) : ''
+
+        name_text = row_cells[cols_map[:name]] ? esc_text(row_cells[cols_map[:name]].text.strip) : "N/A"
+        mfr_code = (cols_map[:mfr] && row_cells[cols_map[:mfr]]) ? esc_text(row_cells[cols_map[:mfr]].text.strip) : ""
+        part_no  = (cols_map[:pn] && row_cells[cols_map[:pn]])  ? esc_text(row_cells[cols_map[:pn]].text.strip)  : ""
+        qty      = row_cells[cols_map[:qty]] ? esc_text(row_cells[cols_map[:qty]].text.strip) : "1"
+        uom_code = (cols_map[:uom] && row_cells[cols_map[:uom]]) ? esc_text(row_cells[cols_map[:uom]].text.strip.upcase) : "EA"
+        uom_attr = cols_map[:uom] ? %( unitOfMeasure="#{uom_code}") : ""
+        rem  = (cols_map[:rmk] && row_cells[cols_map[:rmk]])  ? esc_text(row_cells[cols_map[:rmk]].text.strip)  : ""
+        itm  = (cols_map[:iem] && row_cells[cols_map[:iem]])  ? esc_text(row_cells[cols_map[:iem]].text.strip)  : ""
+        nam   = (cols_map[:nm] && row_cells[cols_map[:nm]])  ? esc_text(row_cells[cols_map[:nm]].text.strip)  : ""
+
+        case group_tag
+        when "supportEquipDescrGroup"
+          %(<#{individual_item_tag}#{item_id_attr}#{item_applic_attr}><name>#{nam}</name><catalogSeqNumberRef figureNumber="#{name_text}" item="#{itm}"></catalogSeqNumberRef><identNumber><manufacturerCode>#{mfr_code}</manufacturerCode><partAndSerialNumber>
+                  <partNumber>#{part_no}</partNumber>
+                </partAndSerialNumber></identNumber><reqQuantity>#{qty}</reqQuantity><remarks><simplePara>#{rem}</simplePara></remarks></#{individual_item_tag}>)
+        when "supplyDescrGroup"
+          %(<#{individual_item_tag}#{item_id_attr}#{item_applic_attr}><name>#{nam}</name><identNumber><manufacturerCode>#{mfr_code}</manufacturerCode><partAndSerialNumber>
+                  <partNumber>#{part_no}</partNumber>
+                </partAndSerialNumber></identNumber><reqQuantity unitOfMeasure="#{uom_code}">#{qty}</reqQuantity>
+          <remarks><simplePara>#{rem}</simplePara></remarks></#{individual_item_tag}>)
+        when "spareDescrGroup"
+          %(<#{individual_item_tag}#{item_id_attr}#{item_applic_attr}><name>#{nam}</name><catalogSeqNumberRef figureNumber="#{name_text}" item="#{itm}"/><identNumber><manufacturerCode>#{mfr_code}</manufacturerCode><partAndSerialNumber>
+                  <partNumber>#{part_no}</partNumber>
+                </partAndSerialNumber></identNumber><reqQuantity>#{qty}</reqQuantity>
+          <remarks><simplePara>#{rem}</simplePara></remarks></#{individual_item_tag}>)
+        end
+      end.compact.join("\n")
+
+      if items_xml.empty?
+        "<#{list_tag}>#{no_item_tag}</#{list_tag}>"
+      else
+        list_tag_attrs = common_attributes(section_node.id) + applic_ref_attribute(section_node)
+        "<#{list_tag}#{list_tag_attrs}><#{group_tag}>\n#{items_xml}\n</#{group_tag}></#{list_tag}>"
+      end
+    end
+
+    def generate_req_safety_xml(section_node)
+      return "<reqSafety><noSafety/></reqSafety>" unless section_node
+      safety_elements = section_node.blocks.map(&:convert).map(&:strip).reject(&:empty?)
+
+      if safety_elements.empty? && !section_node.blocks.any? { |b| b.context == :paragraph && b.source.downcase.include?("no safety condition") }
+        # No elements and no explicit "no safety" paragraph
+      end
+
+      req_safety_attrs = common_attributes(section_node.id) + applic_ref_attribute(section_node)
+      # safety_rqmts_attrs = common_attributes(section_node.id) + applic_ref_attribute(section_node) # Same for this example
+
+      if safety_elements.empty?
+        "<reqSafety#{req_safety_attrs}><noSafety/></reqSafety>"
+      else
+        "<reqSafety#{req_safety_attrs}><safetyRqmts>\n#{safety_elements.join("\n")}\n</safetyRqmts></reqSafety>"
+      end
+    end
+
+    def generate_preliminary_requirements_xml(document_node)
+      prelim_section = document_node.blocks.find { |b| b.context == :section && (b.id == 'prelim_reqs' || b.title.downcase.include?('preliminary requirements')) }
+
+      content_map = {
+        req_conds: "<reqCondGroup><noConds/></reqCondGroup>",
+        req_persons: "",
+        req_tech_info: "<reqTechInfoGroup><noReqTechInfo/></reqTechInfoGroup>",
+        req_support_equip: "<reqSupportEquips><noSupportEquips/></reqSupportEquips>",
+        req_supplies: "<reqSupplies><noSupplies/></reqSupplies>",
+        req_spares: "<reqSpares><noSpares/></reqSpares>",
+        req_safety: "<reqSafety><noSafety/></reqSafety>"
+      }
+
+      if prelim_section
+        prelim_section.blocks.each do |sub_block|
+          next unless sub_block.context == :section
+          title_key = sub_block.id&.downcase || sub_block.title.downcase
+
+          if title_key.include?('req_conds') || title_key.include?('required condition')
+            content_map[:req_conds] = generate_req_cond_group_xml(sub_block)
+          elsif title_key.include?('req_persons') || title_key.include?('required person')
+            content_map[:req_persons] = generate_req_persons_xml(sub_block)
+          elsif title_key.include?('req_tech_info') || title_key.include?('required technical information')
+            content_map[:req_tech_info] = generate_req_tech_info_group_xml(sub_block)
+          elsif title_key.include?('req_equip') || title_key.include?('support equipment')
+            content_map[:req_support_equip] = generate_table_based_req_list(sub_block, "reqSupportEquips", "supportEquipDescrGroup", "supportEquipDescr", "<noSupportEquips/>", {name:0, mfr:5, pn:2, qty:3, rmk:7, iem:1, nm:4})
+          elsif title_key.include?('req_consum') || title_key.include?('supply')
+            content_map[:req_supplies] = generate_table_based_req_list(sub_block, "reqSupplies", "supplyDescrGroup", "supplyDescr", "<noSupplies/>", {name:0, mfr:1, pn:2, qty:3, uom:4, rmk:5, nm:0})
+          elsif title_key.include?('req_spares') || title_key.include?('spare')
+            content_map[:req_spares] = generate_table_based_req_list(sub_block, "reqSpares", "spareDescrGroup", "spareDescr", "<noSpares/>", {name:0, mfr:5, pn:2, qty:3, rmk:6, iem:1, nm:4})
+          elsif title_key.include?('req_safety') || title_key.include?('safety condition')
+            content_map[:req_safety] = generate_req_safety_xml(sub_block)
+          end
+        end
+      end
+
+      prelim_parts = [
+        content_map[:req_conds],
+        (content_map[:req_persons] unless content_map[:req_persons].empty?),
+        content_map[:req_tech_info],
+        content_map[:req_support_equip],
+        content_map[:req_supplies],
+        content_map[:req_spares],
+        content_map[:req_safety]
+      ].compact.join("\n")
+
+      prelim_attrs = prelim_section ? common_attributes(prelim_section.id) + applic_ref_attribute(prelim_section) : ""
+      "<preliminaryRqmts#{prelim_attrs}>\n#{prelim_parts}\n</preliminaryRqmts>"
+    end
+
+     def generate_main_procedure_steps_xml(document_node)
+      main_proc_section = document_node.blocks.find { |b| b.context == :section && (b.id == 'main_proc_steps' || b.title.downcase.include?('main procedure')) }
+
+      blocks_to_consider = if main_proc_section
+                             main_proc_section.blocks
+                           else
+                             # If no explicit main_proc_steps section, consider all blocks not part of other special sections or definitions
+                             document_node.blocks.reject do |b|
+                               is_prelim = b.context == :section && (b.id == 'prelim_reqs' || b.title.downcase.include?('preliminary req'))
+                               is_closeout = b.context == :section && (b.id == 'closeout_reqs' || b.title.downcase.include?('closeout req'))
+                               is_definition_block = ['applicdef', 'productdef', 'attribute_def', 'global_applicability_definition'].include?(b.role) ||
+                                                     ['applicdef', 'productdef', 'attribute_def', 'global_applicability_definition'].include?(b.style)
+                               is_prelim || is_closeout || is_definition_block
+                             end
+                           end
+
+      procedural_steps_xml = []
+
+      blocks_to_consider.each_with_index do |block, index|
+        if block.context == :paragraph && block.blocks.empty? && block.id && !block.title?
+            is_dmc_like = block.source.match?(/^(DMC-)?([A-Z0-9]{2,17})(-[A-Z0-9]{1,4}){9}-[A-Z0-9]{1}$/i)
+            is_short_xref_target_text = block.source.strip.length < 70 &&
+                                        (block.source.downcase.include?(block.id.downcase) ||
+                                         block.source.match?(/refer to|target for/i))
+            is_just_icn_para = block.source.match?(/^ICN-[A-Z0-9\-]+$/i)
+
+            if is_dmc_like || is_short_xref_target_text || is_just_icn_para
+              # This paragraph IS an XREF TARGET. It should become a <proceduralStep>
+              # But only if it's not already handled elsewhere (e.g. by a direct call to its ID)
+              # For your specific case visual_inspection_dm_target, you want it as a step.
+              # We need to ensure it's captured if it's a standalone block meant to be a step.
+              # The original logic skipped it. Let's refine.
+              # If it's an ID'd para that looks like a step label, convert it.
+              # The key is to differentiate between a para that IS a step vs. a para INSIDE a step.
+              # This function is for generating TOP-LEVEL steps.
+              # The input `[[visual_inspection_dm_target]]\nDMC-...` IS a top-level block.
+              # The initial skip was too aggressive.
+              # It will be caught by the `elsif [:image, ..., :paragraph].include?(block.context)` later.
+              # So, the skip here for pure xref targets *that are not meant to be steps themselves* is okay.
+              # If the paragraph is *only* `DMC-MODEL-A-01-0-0-0000-00-A-7210-A-A. Visual Inspection Checklist.`
+              # and has an ID, it *should* become a proceduralStep.
+              # The `elsif [:image, ..., :paragraph]` handles this now.
+              # So, we only skip if it's truly *just* an ancillary xref target and not a step.
+              # Let's keep the skip simple for now; if a block has an ID and content, it will likely be
+              # converted by the later `elsif` clause.
+            end
+        end
+
+        if block.context == :olist
+          block.items.each_with_index do |li, li_idx|
+            step_id = li.id
+            step_id ||= "#{block.id || 'procstep'}-olist-item-#{li_idx + 1}" # More specific auto-ID
+            step_attrs = common_attributes(step_id) + applic_ref_attribute(li)
+
+            title_xml = ""
+            # An olist item's text is its title in S1000D proceduralStep context
+            if li.text && !li.text.strip.empty?
+              title_xml = "<title>#{esc_text(li.text.strip)}</title>"
+            end
+
+            # li.content will call convert_olist/ulist for nested lists,
+            # or convert_paragraph etc. for blocks directly under the list item.
+            # The revised convert_olist/ulist now wrap their output in <para><sequentialList/randomList>
+            inner_content_xml = li.content
+            procedural_steps_xml << "<proceduralStep#{step_attrs}>#{title_xml}#{inner_content_xml}</proceduralStep>"
+          end
+        elsif block.context == :section && block.role != 'attribute_def'
+            step_id = block.id || "procstep-section-#{index + 1}"
+            step_attrs = common_attributes(step_id) + applic_ref_attribute(block)
+            title_xml = block.title? ? "<title>#{esc_text(block.title)}</title>" : ""
+            content_xml = block.content
+            procedural_steps_xml << "<proceduralStep#{step_attrs}>#{title_xml}#{content_xml}</proceduralStep>"
+        elsif [:image, :listing, :literal, :admonition, :table, :open, :paragraph].include?(block.context)
+          is_def_block = (block.role && ['applicdef', 'productdef', 'attribute_def'].include?(block.role)) ||
+                         (block.style && ['applicdef', 'productdef', 'attribute_def'].include?(block.style))
+          next if is_def_block
+
+          is_empty_para_without_id = block.context == :paragraph && !block.id && block.source.strip.empty?
+          unless is_empty_para_without_id
+            step_id = block.id || "procstep-block-#{index + 1}" # procstep-block-4 for your image example if not nested
+            step_attrs = common_attributes(step_id) + applic_ref_attribute(block)
+            converted_content = block.convert # This calls convert_image, convert_paragraph etc.
+
+            next if converted_content.to_s.strip.empty?
+
+            title_outer_xml = ""
+            # Check if the block itself has a title AND if that title isn't already part of the converted_content
+            # (e.g., <figure><title>...</title></figure> already has it)
+            # This is mainly for a block like an OpenBlock or a Paragraph with a block title
+            # that is intended to be the title of the proceduralStep.
+            if block.title?
+                is_title_handled_internally = case block.context
+                                              when :image, :listing, :table # These converters put titles inside their main element
+                                                  true
+                                              else # :paragraph, :open, :literal
+                                                  # If converted_content starts with <figure><title>, <levelledPara><title> etc. it's handled
+                                                  converted_content.strip.match?(/\A<(?:figure|levelledPara|note|warning|caution)(?:[^>]*)>\s*<title>/m) ||
+                                                  converted_content.strip.start_with?("<title>") # Unlikely for these direct conversions
+                                              end
+                title_outer_xml = "<title>#{esc_text(block.title)}</title>" unless is_title_handled_internally
+            end
+            procedural_steps_xml << "<proceduralStep#{step_attrs}>#{title_outer_xml}#{converted_content}</proceduralStep>"
+          end
+        end
+      end
+
+      steps_content = procedural_steps_xml.join("\n")
+      steps_content.empty? ? "<proceduralStep><para/></proceduralStep>" : steps_content # Default empty step
+    end
+
+    def generate_fault_isolation_main_procedure_xml(document_node)
+      fault_main_section = document_node.blocks.find { |b| b.context == :section && (b.id == 'fault_iso_main' || b.title.downcase.include?('fault isolation procedure')) }
+      blocks_to_process = if fault_main_section
+                            fault_main_section.blocks
+                          else
+                            document_node.blocks.reject do |b|
+                              ['prelim_reqs', 'closeout_reqs', 'fault_descr'].any? { |id_part| b.id&.include?(id_part) || b.title.downcase.include?(id_part) } ||
+                              ['applicdef', 'productdef', 'attribute_def', 'global_applicability_definition'].any? { |role_style| b.role == role_style || b.style == role_style }
+                            end
+                          end
+
+      isolation_steps_content = blocks_to_process.each_with_index.map do |block, index|
+        step_id = block.id || "iso-step-#{index + 1}"
+        step_attrs = common_attributes(step_id) + applic_ref_attribute(block)
+        converted_content = block.convert
+        converted_content.to_s.strip.empty? ? nil : "<isolationStep#{step_attrs}>#{converted_content}</isolationStep>"
+      end.compact.join("\n")
+
+      isolation_steps_content = "<isolationProcedureEnd id=\"auto-end-empty-proc\"/>" if isolation_steps_content.strip.empty?
+
+      main_proc_attrs = fault_main_section ? common_attributes(fault_main_section.id) + applic_ref_attribute(fault_main_section) : ""
+      "<isolationMainProcedure#{main_proc_attrs}>\n#{isolation_steps_content}\n</isolationMainProcedure>"
+    end
+
+    def generate_close_requirements_xml(document_node)
+      close_section = document_node.blocks.find { |b| b.context == :section && (b.id == 'closeout_reqs' || b.title.downcase.include?('closeout requirements') || b.title.downcase.include?('requirements after job completion')) }
+      req_conds_xml = "<reqCondGroup><noConds/></reqCondGroup>"
+      attrs_for_close_rqmts = ""
+
+      if close_section
+        attrs_for_close_rqmts = common_attributes(close_section.id) + applic_ref_attribute(close_section)
+        conds_subsection = close_section.blocks.find { |b| b.context == :section && (b.id == 'closeout_conds_after' || b.title.downcase.include?('required conditions after job completion')) }
+        target_node_for_conds = conds_subsection || close_section
+        req_conds_xml = generate_req_cond_group_xml(target_node_for_conds, true)
+      end
+      "<closeRqmts#{attrs_for_close_rqmts}>\n#{req_conds_xml}\n</closeRqmts>"
+    end
+
+    def build_applic_condition_xml(condition_hash, indent_level = 0)
+      current_indent_str = "  " * indent_level
+      xml_string = ""
+      unless condition_hash.is_a?(Hash)
+        warn "asciidoctor: WARNING: Invalid applic condition data: #{condition_hash.inspect}"
+        return ""
+      end
+      type = condition_hash['type']&.downcase
+      if type == 'evaluate'
+        and_or = condition_hash['andOr']&.downcase || 'and'
+        children = condition_hash['children']
+        xml_string << "#{current_indent_str}<evaluate andOr=\"#{esc_text(and_or)}\">\n"
+        if children.is_a?(Array) && !children.empty?
+          children.each { |child_hash| xml_string << build_applic_condition_xml(child_hash, indent_level + 1) }
+        else
+          warn "asciidoctor: WARNING: 'evaluate' node in global applic missing/empty 'children' array."
+        end
+        xml_string << "#{current_indent_str}</evaluate>\n"
+      elsif type == 'assert'
+        prop_ident = condition_hash['propertyIdent']
+        prop_values = condition_hash['propertyValues']
+        prop_type = condition_hash['propertyType'] || 'prodattr'
+        if prop_ident && prop_values
+          xml_string << "#{current_indent_str}<assert applicPropertyIdent=\"#{esc_text(prop_ident)}\" applicPropertyType=\"#{esc_text(prop_type)}\" applicPropertyValues=\"#{esc_text(prop_values)}\"/>\n"
+        else
+          warn "asciidoctor: WARNING: 'assert' node in global applic missing 'propertyIdent' or 'propertyValues'."
+        end
+      else
+        warn "asciidoctor: WARNING: Unknown condition type '#{type}' in global applicability."
+      end
+      xml_string
+    end
+
+    def generate_flat_global_asserts_xml(doc_attrs)
+      collected_asserts = []
+      (1..).each do |i| # Infinite loop, break internally
+        prop_ident = doc_attrs.fetch("s1000d-global-assert-#{i}-propertyident", nil).to_s.strip
+        prop_values = doc_attrs.fetch("s1000d-global-assert-#{i}-propertyvalues", nil).to_s.strip
+        break if prop_ident.empty? || prop_values.empty?
+        prop_type = doc_attrs.fetch("s1000d-global-assert-#{i}-propertytype", 'prodattr').to_s.strip
+        prop_type = 'prodattr' if prop_type.empty?
+        collected_asserts << %(<assert applicPropertyIdent="#{esc_text(prop_ident)}" applicPropertyType="#{esc_text(prop_type)}" applicPropertyValues="#{esc_text(prop_values)}"/>)
+      end
+
+      return "" if collected_asserts.empty?
+
+      result_xml = if collected_asserts.length > 1
+        operator = doc_attrs.fetch('s1000d-global-assert-operator', 'and').to_s.downcase.strip
+        operator = ['and', 'or'].include?(operator) ? operator : 'and'
+        %(<evaluate andOr="#{operator}">\n#{collected_asserts.map { |a| "  #{a}" }.join("\n")}\n</evaluate>)
+      else
+        collected_asserts.first
+      end
+      # This method returns XML that will be placed *inside* <applic>, so it needs to be indented relative to that
+      # The caller build_ident_and_status_section_xml handles the final indentation.
+      # Let's ensure this output is not pre-indented too much.
+      # The map { |a| "  #{a}" } already indents asserts under evaluate.
+      # If only one assert, it's not indented yet.
+      # The caller adds 6 spaces. So, if we add 0 here, it's fine.
+      # If we have evaluate, it needs to be indented by 6 by caller.
+      # Let's remove the .gsub(/^/, '      ') here and let the caller handle it.
+      result_xml # No .gsub(/^/, '      ')
+    end
+
+    def build_ident_and_status_section_xml(doc_attrs, dm_code_attrs_in, act_dm_ref_for_dmstatus, global_applic_text_val, brex_dm_code_attrs_in, rfu_elements_xml, current_node_for_title)
+        dm_code_attrs = dm_code_attrs_in
+        lang_code = (doc_attrs['lang'] || doc_attrs['language'] || 'en').downcase
+        country_code = (doc_attrs['country-code'] || doc_attrs['country'] || 'US').upcase
+        issue_number = doc_attrs['issue-number'] || "001"
+        in_work_status = doc_attrs['in-work'] || doc_attrs['inwork-status'] || "00"
+
+        date_str = (doc_attrs['revdate'] || doc_attrs['issue-date']).to_s.strip
+        year, month, day = nil, nil, nil
+        if date_str.match?(/^\d{4}-\d{2}-\d{2}$/)
+            year, month, day = date_str.split('-')
+        elsif date_str.match?(/^\d{8}$/)
+            year, month, day = date_str[0..3], date_str[4..5], date_str[6..7]
+        elsif !date_str.empty?
+            warn "asciidoctor: WARNING: Invalid date format '#{date_str}'. Expected YYYY-MM-DD or YYYYMMDD. Using current date."
+        end
+        unless year && month && day
+            now = Time.now
+            year, month, day = now.strftime('%Y'), now.strftime('%m'), now.strftime('%d')
+            warn "asciidoctor: INFO: Using current date (#{year}-#{month}-#{day}) as no valid issue/revision date was provided." if date_str.empty?
+        end
+
+        doc_title = current_node_for_title.doctitle if current_node_for_title.respond_to?(:doctitle)
+        tech_name = doc_attrs['tech-name'] || doc_title || "Default Technical Name"
+        dm_title = doc_attrs['dm-title'] || doc_attrs['infoName'] || tech_name
+
+        security_class = doc_attrs['security-classification'] || "01"
+        enterprise_rpc_code = doc_attrs['enterprise-code-rpc'] || "0000X"
+        rpc_name = doc_attrs['responsible-partner-company'] || "UNKNOWN RPC"
+        enterprise_orig_code = doc_attrs['enterprise-code-originator'] || enterprise_rpc_code
+        orig_name = doc_attrs['originator-enterprise'] || rpc_name
+
+        brex_attrs = brex_dm_code_attrs_in
+
+        global_applic_inner_xml = ""
+        if @global_applic_eval_hash && @global_applic_eval_hash.is_a?(Hash) && !@global_applic_eval_hash.empty?
+            raw_xml = build_applic_condition_xml(@global_applic_eval_hash) # build_applic_condition_xml handles its own internal indent
+            global_applic_inner_xml = raw_xml.strip # No extra indent here, it will be indented by the heredoc placement
+        else
+            flat_asserts_xml = generate_flat_global_asserts_xml(doc_attrs) # This now returns unindented or self-indented (for evaluate)
+            global_applic_inner_xml = flat_asserts_xml.strip
+            if global_applic_inner_xml.empty?
+                if @global_applic_eval_hash&.empty? && node_has_global_applic_block(doc_attrs[:document_node])
+                     warn "asciidoctor: INFO: 'global_applicability_definition' block was empty or parsed to empty. No global conditions from block."
+                elsif node_has_global_applic_block(doc_attrs[:document_node]) && @global_applic_eval_hash.nil?
+                     warn "asciidoctor: INFO: 'global_applicability_definition' parse failed. No global conditions from block."
+                elsif !doc_attrs.any?{|k,v| k.start_with?("s1000d-global-assert-")} && !node_has_global_applic_block(doc_attrs[:document_node])
+                    # Only warn if no attempt was made to define global applic
+                    # warn "asciidoctor: INFO: No global applicability conditions defined via attributes or block."
+                end
+            end
+        end
+        # Indent global_applic_inner_xml if it's not empty
+        global_applic_xml_for_status = global_applic_inner_xml.empty? ? "" : "\n#{global_applic_inner_xml.gsub(/^/, '      ')}"
+
+
+        # rfu_elements_xml comes potentially multi-line, needs indent
+        indented_rfu = rfu_elements_xml.strip.empty? ? "" : "\n" + rfu_elements_xml.strip.gsub(/^/, '    ')
+        # act_dm_ref_for_dmstatus comes potentially multi-line, needs indent
+        indented_act_ref = act_dm_ref_for_dmstatus.strip.empty? ? '' : "\n" + act_dm_ref_for_dmstatus.strip.gsub(/^/, '    ')
+
+
+        <<~IASS_XML.strip
+        <identAndStatusSection>
+          <dmAddress>
+            <dmIdent>
+              <dmCode modelIdentCode="#{dm_code_attrs[:modelIdentCode]}" systemDiffCode="#{dm_code_attrs[:systemDiffCode]}" systemCode="#{dm_code_attrs[:systemCode]}" subSystemCode="#{dm_code_attrs[:subSystemCode]}" subSubSystemCode="#{dm_code_attrs[:subSubSystemCode]}" assyCode="#{dm_code_attrs[:assyCode]}" disassyCode="#{dm_code_attrs[:disassyCode]}" disassyCodeVariant="#{dm_code_attrs[:disassyCodeVariant]}" infoCode="#{dm_code_attrs[:infoCode]}" infoCodeVariant="#{dm_code_attrs[:infoCodeVariant]}" itemLocationCode="#{dm_code_attrs[:itemLocationCode]}"/>
+              <language languageIsoCode="#{lang_code}" countryIsoCode="#{country_code}"/>
+              <issueInfo issueNumber="#{issue_number}" inWork="#{in_work_status}"/>
+            </dmIdent>
+            <dmAddressItems>
+              <issueDate year="#{year}" month="#{month}" day="#{day}"/>
+              <dmTitle>
+                <techName>#{esc_text(tech_name)}</techName>
+                <infoName>#{esc_text(dm_title)}</infoName>
+              </dmTitle>
+            </dmAddressItems>
+          </dmAddress>
+          <dmStatus issueType="new">
+            <security securityClassification="#{security_class}"/>
+            <responsiblePartnerCompany enterpriseCode="#{esc_text(enterprise_rpc_code)}"><enterpriseName>#{esc_text(rpc_name)}</enterpriseName></responsiblePartnerCompany>
+            <originator enterpriseCode="#{esc_text(enterprise_orig_code)}"><enterpriseName>#{esc_text(orig_name)}</enterpriseName></originator>#{indented_act_ref}
+            <applic>
+              <displayText><simplePara>#{esc_text(global_applic_text_val)}</simplePara></displayText>#{global_applic_xml_for_status}
+            </applic>
+            <brexDmRef><dmRef><dmRefIdent>
+              <dmCode modelIdentCode="#{brex_attrs[:modelIdentCode]}" systemDiffCode="#{brex_attrs[:systemDiffCode]}" systemCode="#{brex_attrs[:systemCode]}" subSystemCode="#{brex_attrs[:subSystemCode]}" subSubSystemCode="#{brex_attrs[:subSubSystemCode]}" assyCode="#{brex_attrs[:assyCode]}" disassyCode="#{brex_attrs[:disassyCode]}" disassyCodeVariant="#{brex_attrs[:disassyCodeVariant]}" infoCode="#{brex_attrs[:infoCode]}" infoCodeVariant="#{brex_attrs[:infoCodeVariant]}" itemLocationCode="#{brex_attrs[:itemLocationCode]}"/>
+            </dmRefIdent></dmRef></brexDmRef>
+            <qualityAssurance><unverified/></qualityAssurance>#{indented_rfu}
+          </dmStatus>
+        </identAndStatusSection>
+        IASS_XML
+    end
+
+    def build_doctype_declaration(content_markup_for_icns)
+      icn_ids = content_markup_for_icns.scan(/infoEntityIdent=["']((?:ICN|FIG)-[A-Z0-9\-]+)["']/).flatten.uniq
+      return "<!DOCTYPE dmodule>" if icn_ids.empty?
+
+      declarations = ["<!NOTATION PNG SYSTEM \"PNG\">"] # Assuming PNG, make configurable if needed
+      icn_ids.each { |icn| declarations << "<!ENTITY #{esc_text(icn)} SYSTEM \"#{esc_text(icn)}.png\" NDATA PNG>" }
+      "<!DOCTYPE dmodule [\n  #{declarations.join("\n  ")}\n]>"
+    end
+
+    def get_schema_file(dm_type_str)
+      type = dm_type_str.downcase.strip
+      case type
+      when 'procedure', 'procedural'; 'proced.xsd'
+      when 'fault', 'faultisolation'; 'fault.xsd'
+      when 'act', 'applic cross-reference table'; 'applicom.xsd'
+      when 'pct', 'product cross-reference table'; 'applicom.xsd'
+      when 'cct', 'condition cross-reference table'; 'applicom.xsd'
+      when 'descript', 'description', 'descriptive'; 'descript.xsd'
+      when 'crew'; 'crew.xsd'
+      when 'sched', 'scheduled maintenance'; 'sched.xsd'
+      when 'catalog', 'ipd', 'illustrated parts data'; 'ipd.xsd'
+      when 'learning'; 'learning.xsd'
+      when 'comrep'; 'comrep.xsd'
+      when 'sb', 'service bulletin'; 'sb.xsd'
+      when 'process'; 'process.xsd'
+      when 'wiring'; 'wire.xsd'
+      else
+        warn "asciidoctor: WARNING: Unknown dm-type '#{type}'. Defaulting to 'descript.xsd'."
+        'descript.xsd'
+      end
+    end
+
+    def node_has_global_applic_block(document_node)
+      return false unless document_node&.respond_to?(:blocks)
+      document_node.blocks.any? { |b| (b.role == 'global_applicability_definition') || (b.style == 'global_applicability_definition') }
+    end
+
+    def convert_document node
+      @s1000d_applic_definitions, @s1000d_product_definitions, @s1000d_product_attribute_definitions = [], [], []
+      @global_applic_eval_hash = nil
+
+      doc_attrs = node.document.attributes.dup
+      doc_attrs[:document_node] = node # For node_has_global_applic_block
+
+      dmc_str = doc_attrs['dmc'] || doc_attrs['part-title']
+      dm_code_attrs = parse_dmc_string(dmc_str) ||
+                      begin
+                        warn "asciidoctor: WARNING: Invalid/missing DMC '#{dmc_str}'. Using defaults."
+                        { modelIdentCode: "S1KDTOOLS", systemDiffCode: "A", systemCode: "00", subSystemCode: "0", subSubSystemCode: "0", assyCode: "0000", disassyCode: "00", disassyCodeVariant: "A", infoCode: "000", infoCodeVariant: "A", itemLocationCode: "A" }
+                      end
+
+      brex_dmc_str = doc_attrs['brex-dmc']
+      brex_dm_code_attrs = parse_dmc_string(brex_dmc_str) ||
+                           begin
+                             warn "asciidoctor: WARNING: Invalid/missing BREX DMC '#{brex_dmc_str}'. Using defaults."
+                             { modelIdentCode: "S1000D", systemDiffCode: "G", systemCode: "04", subSystemCode: "1", subSubSystemCode: "0", assyCode: "0301", disassyCode: "00", disassyCodeVariant: "A", infoCode: "022", infoCodeVariant: "A", itemLocationCode: "D" }
+                           end
+
+      global_applic_text = (doc_attrs['s1000d-applic-text'] || doc_attrs['applicability-text'] || doc_attrs['applicability'] || "All applicable conditions").strip
+
+      act_dmc_str = doc_attrs['act-dmc']
+      act_dm_ref_xml = ""
+      if act_dmc_str && !act_dmc_str.strip.empty?
+        if act_dm_c = parse_dmc_string(act_dmc_str)
+          act_dm_ref_xml = "<applicCrossRefTableRef><dmRef><dmRefIdent><dmCode modelIdentCode=\"#{act_dm_c[:modelIdentCode]}\" systemDiffCode=\"#{act_dm_c[:systemDiffCode]}\" systemCode=\"#{act_dm_c[:systemCode]}\" subSystemCode=\"#{act_dm_c[:subSystemCode]}\" subSubSystemCode=\"#{act_dm_c[:subSubSystemCode]}\" assyCode=\"#{act_dm_c[:assyCode]}\" disassyCode=\"#{act_dm_c[:disassyCode]}\" disassyCodeVariant=\"#{act_dm_c[:disassyCodeVariant]}\" infoCode=\"#{act_dm_c[:infoCode]}\" infoCodeVariant=\"#{act_dm_c[:infoCodeVariant]}\" itemLocationCode=\"#{act_dm_c[:itemLocationCode]}\"/></dmRefIdent></dmRef></applicCrossRefTableRef>"
+        else
+          warn "asciidoctor: WARNING: Invalid ACT DMC '#{act_dmc_str}'. No <applicCrossRefTableRef> generated."
+        end
+      end
+
+      rfu_raw = doc_attrs['reason-for-update'] || doc_attrs['rfu']
+      rfu_xml = if rfu_raw && !rfu_raw.strip.empty?
+                  id, highlight, type = doc_attrs.values_at('rfu-id', 'rfu-highlight', 'rfu-type').map(&:to_s)
+                  %(\n<reasonForUpdate id="#{esc_text(id.empty? ? "rfu-0001" : id)}" updateHighlight="#{esc_text(highlight.empty? ? "1" : highlight)}" updateReasonType="#{esc_text(type.empty? ? "urt02" : type)}"><simplePara>#{esc_text(rfu_raw)}</simplePara></reasonForUpdate>)
+                else
+                  # warn "asciidoctor: INFO: No 'reason-for-update'. Using default." unless doc_attrs.key?('reason-for-update') || doc_attrs.key?('rfu')
+                  %(\n<reasonForUpdate id="rfu-def-0001" updateHighlight="1" updateReasonType="urt01"><simplePara>Initial issue or standard update.</simplePara></reasonForUpdate>)
+                end
+
+      dm_type = (doc_attrs['dm-type'] || 'descript').downcase.strip
+      node.blocks.each(&:convert) # First pass for definitions (populates @s1000d_... arrays and @global_applic_eval_hash)
+
+      pal_xml = @s1000d_product_attribute_definitions.empty? ? "" : "<productAttributeList>\n#{@s1000d_product_attribute_definitions.map { |pa| "  #{pa.gsub(/^/, '  ')}" }.join("\n")}\n</productAttributeList>" # Indent content of PAL
+
+      pct_dm_ref_xml = ""
+      if dm_type == 'act'
+        pct_dmc_str = doc_attrs['pct-dmc']
+        if pct_dmc_str && !pct_dmc_str.strip.empty?
+          if pct_dm_c = parse_dmc_string(pct_dmc_str)
+            pct_dm_ref_xml = "<productCrossRefTableRef><dmRef><dmRefIdent><dmCode modelIdentCode=\"#{pct_dm_c[:modelIdentCode]}\" systemDiffCode=\"#{pct_dm_c[:systemDiffCode]}\" systemCode=\"#{pct_dm_c[:systemCode]}\" subSystemCode=\"#{pct_dm_c[:subSystemCode]}\" subSubSystemCode=\"#{pct_dm_c[:subSubSystemCode]}\" assyCode=\"#{pct_dm_c[:assyCode]}\" disassyCode=\"#{pct_dm_c[:disassyCode]}\" disassyCodeVariant=\"#{pct_dm_c[:disassyCodeVariant]}\" infoCode=\"#{pct_dm_c[:infoCode]}\" infoCodeVariant=\"#{pct_dm_c[:infoCodeVariant]}\" itemLocationCode=\"#{pct_dm_c[:itemLocationCode]}\"/></dmRefIdent></dmRef></productCrossRefTableRef>"
+          else
+            warn "asciidoctor: WARNING: Invalid PCT DMC '#{pct_dmc_str}' for ACT DM. No <productCrossRefTableRef>."
+          end
+        elsif dm_type == 'act'
+            # warn "asciidoctor: INFO: dm-type 'act' expects 'pct-dmc' attribute for external PCT."
+        end
+      end
+
+      internal_pct_xml = @s1000d_product_definitions.empty? ? "" : "<productCrossRefTable>\n#{@s1000d_product_definitions.map { |p| "  #{p.gsub(/^/, '  ')}" }.join("\n")}\n</productCrossRefTable>" # Indent content of PCT
+      # warn "asciidoctor: INFO: dm-type '#{dm_type}', no '.productdef' blocks found for internal <productCrossRefTable>." if internal_pct_xml.empty? && ['act', 'pct'].include?(dm_type) && @s1000d_product_definitions.empty?
+
+
+      act_outer_xml = ""
+      if dm_type == 'act'
+        # Children are already formatted with their internal indentation (pal_xml, internal_pct_xml)
+        # pct_dm_ref_xml is single line or simple structure.
+        act_children_parts = [
+          (pal_xml.empty? ? nil : pal_xml),
+          (internal_pct_xml.empty? ? nil : internal_pct_xml),
+          (pct_dm_ref_xml.empty? ? nil : pct_dm_ref_xml)
+        ].compact
+        act_children_indented = act_children_parts.map { |c| c.gsub(/^/, '  ') }.join("\n")
+        act_outer_xml = act_children_parts.empty? ? (warn "asciidoctor: INFO: dm-type 'act', no content for <applicCrossRefTable>." ; "") : "<applicCrossRefTable>\n#{act_children_indented}\n</applicCrossRefTable>"
+      end
+
+      rag_xml = @s1000d_applic_definitions.empty? ? "" : "<referencedApplicGroup>\n#{@s1000d_applic_definitions.map { |a| "  #{a.gsub(/^/, '  ')}" }.join("\n")}\n</referencedApplicGroup>" # Indent content of RAG
+      # warn "asciidoctor: INFO: '.applicdef' blocks present but no <referencedApplicGroup> content." if rag_xml.empty? && @s1000d_applic_definitions.empty? && node.blocks.any?{|b| b.role == 'applicdef' || b.style == 'applicdef'}
+
+
+      # This general_content_processed is for blocks NOT handled by special sections or definitions.
+      # It's used by descriptive, fault (for faultDescr), and potentially ACT/PCT for their <description>
+      # It will re-run convert on blocks already processed by generate_main_procedure_steps_xml, prelim_reqs etc. if not careful.
+      # The generate_... methods should be the primary source for structured content.
+      # This general_content_processed should ideally only pick up truly "other" content.
+      # Let's filter it more carefully.
+      content_blocks_for_general = node.blocks.reject do |block|
+        is_def_block = (block.role && ['applicdef', 'productdef', 'attribute_def', 'global_applicability_definition'].include?(block.role)) ||
+                       (block.style && ['applicdef', 'productdef', 'attribute_def', 'global_applicability_definition'].include?(block.style))
+        is_special_section = if block.context == :section
+                               ['prelim_reqs', 'main_proc_steps', 'closeout_reqs', 'fault_iso_main', 'fault_descr_section_id_if_any'].any? { |id| block.id == id } ||
+                               ['preliminary requirements', 'main procedure', 'closeout requirements', 'fault isolation procedure'].any? { |title_part| block.title.downcase.include?(title_part) }
+                             else
+                               false
+                             end
+        is_def_block || is_special_section
+      end
+
+      general_content_processed = content_blocks_for_general.map do |block|
+        block.convert # This needs to be smart about not re-generating complex structures
+      end.compact.map(&:strip).reject(&:empty?).join("\n")
+
+
+      main_dm_content = case dm_type
+                        when 'procedure', 'procedural'
+                          prelim = generate_preliminary_requirements_xml(node)
+                          main_proc_output = generate_main_procedure_steps_xml(node) # This is a string of <proceduralStep>...</proceduralStep>\n...
+                          closeout = generate_close_requirements_xml(node)
+
+                          main_proc_for_dm = if main_proc_output == "<proceduralStep><para/></proceduralStep>" # Default empty step
+                                               main_proc_output # Already a single, empty step
+                                             elsif main_proc_output.strip.empty?
+                                               "<proceduralStep><para/></proceduralStep>"
+                                             else
+                                               # Wrap the sequence of actual steps in an outer <proceduralStep>
+                                               # Indent the inner steps relative to this new outer step
+                                               "<proceduralStep>\n#{main_proc_output.gsub(/^/, '  ')}\n</proceduralStep>"
+                                             end
+                          <<~PROCEDURE_XML.strip
+                            <procedure>
+                              #{prelim.gsub(/^/, '  ')}
+                              <mainProcedure>
+                                #{main_proc_for_dm.gsub(/^/, '  ')}
+                              </mainProcedure>
+                              #{closeout.gsub(/^/, '  ')}
+                            </procedure>
+                          PROCEDURE_XML
+                        when 'fault', 'faultisolation'
+                          # Use general_content_processed for <faultDescr> if no specific faultDescr section exists
+                          fault_descr_content = general_content_processed # Assuming general_content is now correctly filtered
+                          fault_descr_xml = fault_descr_content.empty? ? "<faultDescr><para>No fault description provided.</para></faultDescr>" : "<faultDescr>\n#{fault_descr_content.gsub(/^/, '  ')}\n</faultDescr>"
+                          prelim = generate_preliminary_requirements_xml(node)
+                          fault_iso = generate_fault_isolation_main_procedure_xml(node)
+                          closeout = generate_close_requirements_xml(node)
+                          <<~FAULT_XML.strip
+                            <fault>
+                              #{fault_descr_xml.gsub(/^/, '  ')}
+                              <faultIsolation>
+                                <faultIsolationProcedure>
+                                  <isolationProcedure>
+                                    #{prelim.gsub(/^/, '    ')}
+                                    #{fault_iso.gsub(/^/, '    ')}
+                                    #{closeout.gsub(/^/, '    ')}
+                                  </isolationProcedure>
+                                </faultIsolationProcedure>
+                              </faultIsolation>
+                            </fault>
+                          FAULT_XML
+                        when 'act'
+                          desc_content = general_content_processed # general_content_processed for <description>
+                          desc_xml = desc_content.empty? ? "" : "<description>\n#{desc_content.gsub(/^/, '  ')}\n</description>\n"
+                          # act_outer_xml is already fully formed and indented internally
+                          desc_xml + act_outer_xml
+                        when 'pct'
+                          desc_content = general_content_processed
+                          desc_xml = desc_content.empty? ? "" : "<description>\n#{desc_content.gsub(/^/, '  ')}\n</description>\n"
+                          # internal_pct_xml is already fully formed
+                          desc_xml + internal_pct_xml
+                        when 'descript', 'description', 'descriptive'
+                          content_indented = general_content_processed.gsub(/^/, '  ')
+                          "<description>\n#{content_indented}\n</description>"
+                        else
+                          warn "asciidoctor: WARNING: Unknown dm-type '#{dm_type}'. Defaulting to descriptive."
+                          content_indented = general_content_processed.gsub(/^/, '  ')
+                          "<description>\n#{content_indented}\n</description>"
+                        end
+
+      final_content_parts = []
+      # RAG is typically for non-ACT/PCT DMs, but check S1000D spec for specific DM type rules
+      final_content_parts << rag_xml.strip if !rag_xml.empty? # rag_xml is already formatted
+      final_content_parts << main_dm_content.strip unless main_dm_content.strip.empty? # main_dm_content is already formatted
+      final_content_xml = final_content_parts.empty? ? "<noContent/>" : final_content_parts.join("\n")
+
+
+      ident_status_section = build_ident_and_status_section_xml(doc_attrs, dm_code_attrs, act_dm_ref_xml, global_applic_text, brex_dm_code_attrs, rfu_xml, node)
+      doctype_decl = build_doctype_declaration(final_content_xml) # Pass the final XML including all graphics
+      schema_file = get_schema_file(dm_type)
+      schema_base = doc_attrs['s1000d-schema-base-path'] || "http://www.s1000d.org/S1000D_5.0/xml_schema_flat/"
+
+      result = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      #{doctype_decl}
+      <dmodule xmlns:dc="http://www.purl.org/dc/elements/1.1/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="#{schema_base}#{schema_file}">
+      #{ident_status_section.gsub(/^/, '  ')}
+        <content>
+      #{final_content_xml.gsub(/^/, '    ')}
+        </content>
+      </dmodule>
+      XML
+      result.gsub(/\n\s*\n/, "\n").strip # Clean up multiple blank lines and leading/trailing whitespace
+    end
+
+    def convert_paragraph(node)
+      if node.role == 'applicdef'; process_as_applic_definition(node); return ""
+      elsif node.role == 'productdef'; process_as_product_definition(node); return ""
+      elsif node.role == 'attribute_def'
+        warn "asciidoctor: WARNING: '.attribute_def' on para. Enumerations need ulist."
+        process_as_product_attribute_definition(node); return ""
+      end
+      content = node.content # This will contain converted inline elements like xrefs
+      # If paragraph is empty after processing (e.g. only contained a definition block)
+      # or truly empty, return an empty para tag only if it has an ID or applic_ref.
+      # S1000D usually requires content in <para> unless it's a specific empty structural element.
+      para_attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      if content.nil? || (content.is_a?(String) && content.strip.empty?)
+         return "<para#{para_attrs}/>" # S1000D compliant empty para if attributes exist
+         # If no attributes and empty, it might be better to return "" and let parent handle structure
+         # For now, this is consistent.
+      end
+      %(<para#{para_attrs}>#{content}</para>)
+    end
+
+    def convert_open(node)
+      if node.role == 'applicdef'; process_as_applic_definition(node); return ""
+      elsif node.role == 'productdef'; process_as_product_definition(node); return ""
+      elsif node.role == 'attribute_def'; process_as_product_attribute_definition(node); return ""
+      end
+      content = node.content
+      # return "" if content.nil? || (content.is_a?(String) && content.strip.empty?) # Avoid empty <levelledPara> without content
+
+      open_attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      title_el = node.title? ? "<title>#{esc_text(node.title)}</title>" : ""
+
+      # If content is empty and no title, it's probably better to return empty string
+      # to avoid empty <levelledPara></levelledPara> or <levelledPara><title>X</title></levelledPara>
+      return "" if content.to_s.strip.empty? && title_el.empty? && open_attrs.empty?
+
+
+      if node.style == 'example' || node.role == 'example'
+        # S1000D doesn't have a direct "example" like DocBook.
+        # Using levelledPara with a class or relying on title is an option.
+        # For now, let's treat it as a regular levelledPara if it has content/title.
+        return %(<levelledPara#{open_attrs} class="example">#{title_el}#{content}</levelledPara>)
+      end
+
+      # If it's just content without a title, and the content is a single para, S1000D might prefer just the para.
+      # However, an open block implies some structure.
+      # Defaulting to levelledPara if it has a title or if it has attributes, or if content is complex.
+      # If no title and no attributes, and content is simple, just return content.
+      if title_el.empty? && open_attrs.empty? && !node.blocks? && node.content.is_a?(String) && node.content.strip.start_with?('<para')
+          return node.content # Let the inner paragraph stand alone if open block adds no semantic value
+      end
+      %(<levelledPara#{open_attrs}>#{title_el}#{content}</levelledPara>)
+    end
+
+    def convert_ulist(node)
+      return "" if node.role == 'attribute_def' || node.style == 'attribute_def' # Handled by process_as_product_attribute_definition
+
+      list_attrs_for_rand_list = common_attributes(node.id) + applic_ref_attribute(node)
+      items = node.items.map do |item|
+        item_attrs = common_attributes(item.id) + applic_ref_attribute(item)
+        inner_content = if item.blocks?
+                         item.content # This will call convert for nested blocks
+                       elsif item.text && !item.text.strip.empty?
+                         "<para>#{esc_text(item.text)}</para>" # Simple text becomes a para
+                       else
+                         "<para/>" # S1000D requires listItem to have content
+                       end
+        "<listItem#{item_attrs}>#{inner_content}</listItem>"
+      end.compact.join("\n")
+
+      return "" if items.empty? # Don't output <para><randomList/></para> if no items
+
+      # Wrap the <randomList> in a <para>. This is common in S1000D.
+      "<para><randomList#{list_attrs_for_rand_list}>#{items}</randomList></para>"
+    end
+
+    def convert_olist(node)
+      item_outputs = []
+
+      node.items.each_with_index do |item, idx|
+        # Heuristic for olist items directly under a proceduralStep's title:
+        # If the olist item itself does NOT have a title (item.text is empty/nil),
+        # its content is part of the parent proceduralStep's flow.
+        # If it HAS text, it could imply a sub-step title, but S1000D does not directly nest
+        # <proceduralStep> within <proceduralStep> via olist items in this simple way.
+        # The generate_main_procedure_steps_xml handles top-level olist items becoming steps.
+        # This convert_olist is for olist *within* a block (e.g., within a list item of a higher step).
+
+        li_attrs = common_attributes(item.id) + applic_ref_attribute(item)
+        li_content_parts = []
+
+        # If the list item has text, it's usually a lead-in or the primary content of that item.
+        if item.text && !item.text.strip.empty?
+          # S1000D listItem often contains <para> for its text.
+          # If item.blocks? is true, this text might be a prefix to further nested content.
+          li_content_parts << "<para>#{esc_text(item.text.strip)}</para>"
+        end
+
+        if item.blocks?
+          # Recursively convert nested blocks. item.content will handle this.
+          # The output of item.content (e.g. another list wrapped in <para>) will be appended.
+          li_content_parts << item.content
+        end
+
+        final_li_content = li_content_parts.compact.join("\n").strip
+        final_li_content = "<para/>" if final_li_content.empty? # Ensure listItem has valid S1000D content
+
+        item_outputs << "<listItem#{li_attrs}>#{final_li_content}</listItem>"
+      end
+
+      return "" if item_outputs.empty?
+
+      list_attrs_for_seq_list = common_attributes(node.id) + applic_ref_attribute(node)
+      list_item_xml = item_outputs.join("\n")
+
+      # Wrap the <sequentialList> in a <para>.
+      "<para><sequentialList#{list_attrs_for_seq_list}>#{list_item_xml}</sequentialList></para>"
+    end
+
+    def convert_dlist(node)
+      dl_attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      items = node.items.map do |terms, dd|
+        # Simplified term handling: join multiple terms with "; "
+        term_xml = terms.map { |dt| esc_text(dt.text) }.join("; ")
+        # Ensure dd_content is valid S1000D (e.g., wrapped in para if just text)
+        dd_content = if dd
+                       if dd.blocks?
+                         dd.content # Assumes dd.content produces valid S1000D block content
+                       elsif dd.text? && !dd.text.strip.empty?
+                         "<para#{applic_ref_attribute(dd)}>#{esc_text(dd.text)}</para>"
+                       else
+                         "<para#{applic_ref_attribute(dd)}/>" # Empty definition item
+                       end
+                     else
+                       "<para/>" # No definition provided
+                     end
+        "<definitionListItem><listItemTerm>#{term_xml}</listItemTerm><listItemDefinition>#{dd_content}</listItemDefinition></definitionListItem>"
+      end.join("\n")
+
+      return "" if items.empty?
+      "<definitionList#{dl_attrs}>#{items}</definitionList>"
+    end
+
+    def convert_literal(node)
+      if node.role == 'global_applicability_definition' || node.style == 'global_applicability_definition'
+        # warn "asciidoctor: INFO: Using style for global_applicability_definition is deprecated. Use role." if node.style == 'global_applicability_definition' && node.role != 'global_applicability_definition'
+        json_string = node.content
+        begin
+          parsed = JSON.parse(json_string)
+          if parsed.is_a?(Hash) && !parsed.empty?
+            @global_applic_eval_hash = parsed
+          else
+            warn "asciidoctor: WARNING: JSON in global_applicability_definition not a non-empty Hash. No global applic conditions from this block."
+            @global_applic_eval_hash = nil # Explicitly nil if not valid
+          end
+        rescue JSON::ParserError => e
+          warn "asciidoctor: WARNING: JSON parse error in global_applicability_definition: #{e.message}. No global applic conditions from this block."
+          @global_applic_eval_hash = nil # Explicitly nil on error
+        end
+        return "" # This block's content is processed into @global_applic_eval_hash
+      end
+      # Standard literal block becomes <para><verbatimText>
+      para_attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      # S1000D expects <verbatimText> not to be empty if the tag is present.
+      return "<para#{para_attrs}/>" if node.content.to_s.strip.empty? && !para_attrs.empty?
+      return "" if node.content.to_s.strip.empty? && para_attrs.empty?
+
+      "<para#{para_attrs}><verbatimText>#{esc_text(node.content)}</verbatimText></para>"
+    end
+
+    def convert_listing(node) # Code blocks
+      attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      content = esc_text(node.content)
+
+      # S1000D: Listings are often represented as figures with verbatimText, or directly in <verbatimText> inside a para.
+      if node.title?
+        # If it has a title, <figure> is appropriate.
+        "<figure#{attrs}><title>#{esc_text(node.title)}</title><graphic><verbatimText>#{content}</verbatimText></graphic></figure>"
+      else
+        # No title, treat as inline verbatim text within a paragraph structure.
+        return "<para#{attrs}/>" if content.empty? && !attrs.empty?
+        return "" if content.empty? && attrs.empty?
+        "<para#{attrs}><verbatimText>#{content}</verbatimText></para>"
+      end
+    end
+
+    def convert_section(node)
+      # S1000D doesn't have generic "sections" like Asciidoctor within its content model (e.g. inside <procedure>)
+      # Procedural DMs have <preliminaryRqmts>, <mainProcedure>, <closeRqmts>.
+      # Descriptive DMs have <description> which contains <levelledPara>, <figure>, etc.
+      # A "section" from Asciidoctor might map to a <levelledPara> in S1000D if it's part of descriptive content.
+      # If this section is one of the special S1000D sections, it's handled by generate_... methods.
+      # This method is for converting a generic Asciidoctor section encountered during content processing.
+
+      attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      title_xml = node.title? ? "<title>#{esc_text(node.title)}</title>" : ""
+      content_xml = node.content # This recursively converts blocks within the section
+
+      # Avoid empty <levelledPara></levelledPara> or <levelledPara><title>X</title></levelledPara>
+      return "" if content_xml.to_s.strip.empty? && title_xml.empty?
+
+      "<levelledPara#{attrs}>#{title_xml}#{content_xml}</levelledPara>"
+    end
+
+      def convert_inline_anchor(node)
+      case node.type
+      when :xref
+        target = (node.attributes['refid'] || node.target).sub(/^#/, '')
+        target_node_obj = node.document.catalog[:ids][target]
+        type_attr = determine_internal_ref_target_type(target_node_obj, target)
+        display_text = node.text || target # node.text for xref is the custom text, node.target is the ID by default
+        "<internalRef internalRefId=\"#{esc_text(target)}\"#{type_attr}>#{esc_text(display_text)}</internalRef>"
+      when :link
+        display_text = node.text || node.target
+        "<externalRef destination=\"#{esc_text(node.target)}\">#{esc_text(display_text)}</externalRef>"
+      when :ref
+        # This type is often from anchor:id[] or footnotes.
+        # If node.text is present, it means anchor:id[text was used].
+        # If node.target is empty as in the warning, it was likely an anchor without a target ID
+        # or an internal marker. For S1000D, these often don't have a direct equivalent unless
+        # they are footnote markers.
+        if node.text # If anchor:id[text] was used, output the text
+          # warn "asciidoctor: INFO: Outputting text for :ref anchor (target: #{node.target}, text: #{node.text})"
+          esc_text(node.text)
+        else
+          # No display text, and target might be empty. Likely an unused marker.
+          # warn "asciidoctor: INFO: Skipping empty :ref anchor (target: #{node.target})"
+          "" # Output nothing
+        end
+      when :bibref
+        # Similar to :ref, often no direct S1000D equivalent unless full bibliography support is added.
+        if node.text
+          # warn "asciidoctor: INFO: Outputting text for :bibref anchor (target: #{node.target}, text: #{node.text})"
+          esc_text(node.text)
+        else
+          # warn "asciidoctor: INFO: Skipping empty :bibref anchor (target: #{node.target})"
+          "" # Output nothing
+        end
+      else
+        warn "asciidoctor: WARNING: Unknown S1000D conversion for anchor type '#{node.type}'. Outputting as text."
+        esc_text(node.text || node.target)
+      end
+    end
+
+    def convert_table(node)
+      attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      # S1000D table attributes
+      pgwide_attr = (node.option?('pgwide') || node.attr?('width', '100%')) ? ' pgwide="1"' : ' pgwide="0"' # S1000D uses 0 or 1
+      s1k_frame = case node.attr('frame', 'all') # Default Asciidoctor frame is 'all'
+                  when 'topbot'; 'topbot'
+                  when 'sides';  'sides'
+                  when 'none';   'none'
+                  else 'all' # S1000D 'all'
+                  end
+      frame_attr = %( frame="#{s1k_frame}")
+
+      # S1000D grid (rowsep, colsep)
+      grid_val = node.attr('grid', 'all') # Default Asciidoctor grid is 'none' if format is HTML, 'all' for DocBook
+      rowsep_attr = (grid_val == 'all' || grid_val == 'rows') ? ' rowsep="1"' : ' rowsep="0"'
+      colsep_attr = (grid_val == 'all' || grid_val == 'cols') ? ' colsep="1"' : ' colsep="0"'
+
+      orient_attr = node.attr?('orientation', 'landscape', 'table-orient') ? ' orient="land"' : ' orient="port"'
+
+
+      result = "<table#{attrs}#{frame_attr}#{pgwide_attr}#{rowsep_attr}#{colsep_attr}#{orient_attr}>"
+      result << "<title>#{esc_text(node.title)}</title>" if node.title?
+      result << "<tgroup cols=\"#{node.attr 'colcount'}\">" # colcount is reliable
+
+      # Column specifications
+      node.columns.each do |col|
+        col_num = col.attr('colnumber') # 1-based
+        colname_attr = %( colname="c#{col_num}") # S1000D requires colname
+        # Asciidoctor colspec (width, align) maps to S1000D colspec attributes
+        width_val = col.attr('width') # Proportional width
+        colwidth_attr = width_val ? %( colwidth="#{width_val}*") : "" # S1000D format for proportional
+        align_val = col.attr('halign') # 'left', 'center', 'right'
+        align_attr = align_val ? %( align="#{align_val}") : ""
+        # S1000D also has char, charoff - not directly mapped from Asciidoctor basic table
+        result << "<colspec#{colname_attr}#{colwidth_attr}#{align_attr}/>"
+      end
+
+      # Table head, foot, body
+      [:head, :foot, :body].each do |tsec_name|
+        rows_collection = node.rows.send(tsec_name)
+        next if rows_collection.empty?
+        result << "<t#{tsec_name}>" # <thead/>, <tfoot/>, <tbody/>
+        rows_collection.each do |row|
+          result << "<row>"
+          row.each do |cell|
+            entry_attrs = ""
+            # Cell alignment (halign, valign)
+            halign_val = cell.attr('halign')
+            entry_attrs << %( align="#{halign_val}") if halign_val
+            valign_val = cell.attr('valign')
+            entry_attrs << %( valign="#{valign_val}") if valign_val
+
+            # Spans (colspan, rowspan) -> S1000D (namest, nameend, morerows)
+            col_num_start = cell.column.attr('colnumber')
+            if cell.colspan.to_i > 1
+              entry_attrs << %( namest="c#{col_num_start}" nameend="c#{col_num_start + cell.colspan - 1}")
+            else
+              entry_attrs << %( nameend="c#{col_num_start}" namest="c#{col_num_start}") # namest/nameend for single col too
+            end
+            entry_attrs << %( morerows="#{cell.rowspan - 1}") if cell.rowspan.to_i > 1
+
+            # Cell ID and applicRef
+            entry_attrs << common_attributes(cell.id) << applic_ref_attribute(cell)
+
+            # Cell content: Asciidoctor cell can have :text or :content (if style is :asciidoc)
+            cell_body = case cell.style
+                       when :asciidoc
+                         cell.content # This will be pre-converted Asciidoctor blocks
+                       when :literal
+                         # Literal style cell content should be wrapped in para/verbatimText
+                         "<para><verbatimText>#{esc_text(cell.text)}</verbatimText></para>"
+                       else # :strong, :emphasis, :monospaced, or just plain text
+                         # Plain text content needs to be wrapped, typically in <para> for S1000D <entry>
+                         cell.text.to_s.strip.empty? ? "<para/>" : "<para>#{esc_text(cell.text)}</para>"
+                       end
+            result << "<entry#{entry_attrs}>#{cell_body}</entry>"
+          end
+          result << "</row>"
+        end
+        result << "</t#{tsec_name}>"
+      end
+      result << "</tgroup></table>"
+      result
+    end
+
+    alias convert_embedded content_only # For includes, process their content directly
+
+    def convert_image(node) # Block image
+      attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      title_xml = node.title ? "<title>#{esc_text(node.title)}</title>" : ""
+
+      icn_val = node.attr('icn')
+      unless icn_val && !icn_val.strip.empty?
+        # Try to infer ICN from target filename or alt text if 'icn' attribute is missing
+        img_target_basename = File.basename(node.attr('target', 'unknown.png'), '.*')
+        alt_text = node.attr('alt')
+
+        if alt_text && alt_text.match?(/^(?:ICN|FIG)-/i) # Alt text looks like an ICN
+          icn_val = alt_text.upcase
+          warn "asciidoctor: INFO: Inferred ICN '#{icn_val}' from 'alt' text for image target '#{node.attr('target')}'. Best practice is to use the 'icn' attribute."
+        elsif img_target_basename.match?(/^(?:ICN|FIG)-/i) # Filename looks like an ICN
+          icn_val = img_target_basename.upcase
+          warn "asciidoctor: INFO: Inferred ICN '#{icn_val}' from image target filename '#{node.attr('target')}'. Best practice is to use the 'icn' attribute."
+        else
+          # Generate a fallback FIG- ICN from alt text or filename
+          fallback_base = alt_text || img_target_basename
+          icn_val = "FIG-#{fallback_base.gsub(/[^A-Za-z0-9\-_\.]/, '_').gsub(/_+/, '_').upcase}"
+          warn "asciidoctor: WARNING: No 'icn' attribute provided for image target '#{node.attr('target')}' and could not infer a valid ICN. Using generated ICN: #{icn_val}."
+        end
+      end
+      # S1000D: <figure> wraps <title> and <graphic>
+      "<figure#{attrs}>#{title_xml}<graphic infoEntityIdent=\"#{esc_text(icn_val.strip)}\"/></figure>"
+    end
+
+    def convert_inline_quoted(node)
+      open_tag, close_tag = QUOTE_TAGS[node.type]
+      # Inline quoted elements in S1000D usually don't carry their own ID/applic_ref directly on the emphasis/verbatimText tag itself.
+      # Attributes would typically be on a containing element like <para> or <listItem>.
+      # If you need ID on these, the S1000D schema might require a more complex structure (e.g. <para id="x"><emphasis>...</emphasis></para>)
+      # For now, ignore common_attributes(node.id) for inline quoted, as it's often not valid S1000D.
+      # attrs = common_attributes(node.id) # Usually not applicable here
+
+      # If the node has text (it should for inline quoted)
+      text_content = node.text ? esc_text(node.text) : ""
+
+      "#{open_tag}#{text_content}#{close_tag}"
+    end
+
+    # In class Asciidoctor::Converter::S1000D
+
+    # ... (other methods) ...
+
+    def convert_admonition(node) # NOTE, WARNING, CAUTION, TIP, IMPORTANT
+      attrs = common_attributes(node.id) + applic_ref_attribute(node)
+      type = node.attr('name').upcase # Asciidoctor types: note, tip, important, warning, caution
+
+      # node.content will return:
+      # 1. A String, if the admonition contains only simple text (e.g., "This is the note content.").
+      # 2. A String (of already converted XML), if the admonition contains blocks.
+      processed_content_from_node = node.content.to_s.strip # Get content and ensure it's a string
+
+      final_inner_xml = ""
+
+      if !node.blocks?
+        # Admonition contained simple text. `processed_content_from_node` is that text.
+        # We need to wrap this text in the appropriate S1000D paragraph type.
+        if processed_content_from_node.empty?
+          # Simple text was empty, create an empty S1000D para
+          case type
+          when 'WARNING', 'CAUTION'; final_inner_xml = "<warningAndCautionPara/>"
+          else final_inner_xml = "<notePara/>"
+          end
+        else
+          text_to_wrap = esc_text(processed_content_from_node) # Escape the raw text
+          case type
+          when 'WARNING', 'CAUTION'; final_inner_xml = "<warningAndCautionPara>#{text_to_wrap}</warningAndCautionPara>"
+          else final_inner_xml = "<notePara>#{text_to_wrap}</notePara>"
+          end
+        end
+      elsif node.blocks?
+        # Admonition contained other blocks. `processed_content_from_node` is their XML conversion.
+        # We assume this XML is valid content for the S1000D note/warning/caution element.
+        # S1000D usually expects specific children like para, lists, figures.
+        # If processed_content_from_node is empty (e.g., inner blocks converted to nothing),
+        # we should still provide a default empty S1000D paragraph.
+        if processed_content_from_node.empty?
+          case type
+          when 'WARNING', 'CAUTION'; final_inner_xml = "<warningAndCautionPara/>"
+          else final_inner_xml = "<notePara/>"
+          end
+        else
+          final_inner_xml = processed_content_from_node
+        end
+      else
+        # This case should ideally not be reached if the above covers all scenarios
+        # (node.blocks? is either true or false).
+        # Default to an empty paragraph for safety.
+        case type
+        when 'WARNING', 'CAUTION'; final_inner_xml = "<warningAndCautionPara/>"
+        else final_inner_xml = "<notePara/>"
+        end
+      end
+
+      case type
+      when 'WARNING'; "<warning#{attrs}>#{final_inner_xml}</warning>"
+      when 'CAUTION'; "<caution#{attrs}>#{final_inner_xml}</caution>"
+      when 'NOTE';    "<note#{attrs}>#{final_inner_xml}</note>"
+      when 'TIP', 'IMPORTANT' # S1000D maps these to <note>
+        warn "asciidoctor: INFO: Admonition type '#{type}' mapped to S1000D <note>."
+        "<note#{attrs}>#{final_inner_xml}</note>"
+      else # Should not happen given Asciidoctor's fixed admonition types
+        warn "asciidoctor: WARNING: Unknown admonition type '#{type}' encountered. Mapping to generic <note>."
+        # Fallback to ensure some output if type is unexpected
+        # Re-access node.content directly for a robust fallback text if initial logic had issues.
+        fallback_text_content = node.content.to_s.strip
+        fallback_para = if fallback_text_content.empty?
+                          "<notePara/>"
+                        elsif !node.blocks? # was simple text
+                          "<notePara>#{esc_text(fallback_text_content)}</notePara>"
+                        else # was blocks, fallback_text_content is their XML
+                          fallback_text_content
+                        end
+        "<note#{attrs}>#{fallback_para}</note>"
+      end
+    end
+
+    # ... (rest of your converter code) ...
+
+    def convert_thematic_break(node) # Horizontal rule / page break
+      # S1000D doesn't have a direct equivalent for a simple thematic break within procedural/descriptive text.
+      # It might imply a page break in print, or a section break, but these are handled differently.
+      # For now, outputting nothing is safest to avoid invalid XML.
+      # If you need specific S1000D elements for breaks, this would need custom logic.
+      ''
+    end
+
+    def convert_inline_image(node)
+      # Inline images are usually small icons or symbols within text.
+      # S1000D represents these with <graphic infoEntityIdent="..."/>.
+      # Attributes like ID are less common directly on inline <graphic>.
+      target_path = node.target
+      icn_val = node.attr('icn') # Try 'icn' attribute first
+
+      unless icn_val && !icn_val.strip.empty?
+        # Infer from alt text or filename if 'icn' is missing
+        alt_text = node.attr('alt')
+        base_filename = File.basename(target_path, '.*')
+
+        if alt_text && alt_text.match?(/^(?:ICN|FIG)-/i)
+          icn_val = alt_text.upcase
+        elsif base_filename.match?(/^(?:ICN|FIG)-/i)
+          icn_val = base_filename.upcase
+        else
+          # Generate a fallback "INL-FIG-" ICN
+          fallback_base = alt_text || base_filename
+          icn_val = "INL-FIG-#{fallback_base.gsub(/[^A-Za-z0-9\-_\.]/, '_').gsub(/_+/, '_').upcase}"
+          warn "asciidoctor: INFO: Inline image target '#{target_path}' missing 'icn' attribute. Generated fallback ICN: #{icn_val}."
+        end
+      end
+      "<graphic infoEntityIdent=\"#{esc_text(icn_val.strip)}\"/>"
+    end
+
+    def convert_fallback(node)
+      warn %(asciidoctor: WARNING: S1000D converter encountered unhandled node type: '#{node.node_name}' (ID: '#{node.id}', Context: '#{node.context}'). This content will be SKIPPED.)
+      "" # Return empty string for unhandled nodes to avoid breaking XML structure.
+    end
+  end
+end
