@@ -233,6 +233,7 @@ _SETTINGS_KEYS = {
     "glmocr_ollama_model":("GLMOCR_OLLAMA_MODEL",   "glm-ocr:latest"),
     "odl_use_hybrid":     ("ODL_USE_HYBRID",        False),
     "odl_hybrid_url":     ("ODL_HYBRID_URL",        "http://127.0.0.1:5002"),
+    "ocr_workers":        ("OCR_WORKERS",           4),
 }
 
 
@@ -253,6 +254,11 @@ def save_settings():
             # Coerce types
             if isinstance(default, bool):
                 val = bool(val)
+            elif isinstance(default, int):
+                try:
+                    val = max(1, int(val))
+                except (TypeError, ValueError):
+                    val = default
             elif isinstance(default, str):
                 val = str(val).strip() or default
             setattr(_suite, attr, val)

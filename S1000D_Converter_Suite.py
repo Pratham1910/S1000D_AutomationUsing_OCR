@@ -150,6 +150,14 @@ GLMOCR_OLLAMA_URL = os.environ.get("S1000D_GLMOCR_OLLAMA_URL", "http://127.0.0.1
 GLMOCR_OLLAMA_MODEL = os.environ.get("S1000D_GLMOCR_OLLAMA_MODEL", "glm-ocr:latest")
 GLMOCR_LAYOUT_MODEL_DIR = os.environ.get("S1000D_GLMOCR_LAYOUT_MODEL_DIR", "").strip()
 
+# Number of pages OCR'd concurrently. The backend (GPU / Ollama server) is the
+# real bottleneck — raising this past what the server can serve in parallel
+# just queues requests. With Ollama, also raise OLLAMA_NUM_PARALLEL server-side.
+try:
+    OCR_WORKERS = max(1, int(os.environ.get("S1000D_OCR_WORKERS", "4")))
+except ValueError:
+    OCR_WORKERS = 4
+
 # OpenDataLoader-PDF config (fallback high-accuracy PDF extractor)
 ODL_USE_HYBRID  = os.environ.get("S1000D_ODL_HYBRID",      "0") not in ("0", "false", "False")
 ODL_HYBRID_URL  = os.environ.get("S1000D_ODL_HYBRID_URL",  "http://127.0.0.1:5002")
@@ -308,6 +316,10 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
     try:
         import requests
 
+        # Cap table input — large tables can't be meaningfully repaired by LLM anyway
+        if len(table_text) > 6000:
+            return None
+
         prompt = (
             "You are an AsciiDoc table expert.\n"
             "Repair the following table into valid AsciiDoc table markup.\n"
@@ -317,7 +329,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
             "2) Preserve all source content words; do not drop data.\n"
             "3) Do not add explanations.\n\n"
             "TABLE INPUT:\n"
-            f"{table_text[:40000]}\n"
+            f"{table_text[:6000]}\n"
         )
 
         endpoints: List[Tuple[str, Dict[str, Any], str]] = []
@@ -327,13 +339,14 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
         else:
             root = base.rstrip("/")
 
+        _opts = {"temperature": 0, "top_p": 0.9, "num_predict": 2048}
         endpoints.append((
             base,
             {
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0, "top_p": 0.9},
+                "options": _opts,
             },
             "generate",
         ))
@@ -343,7 +356,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
                 "model": OLLAMA_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "options": {"temperature": 0, "top_p": 0.9},
+                "options": _opts,
             },
             "chat",
         ))
@@ -351,7 +364,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
         out = ""
         for url, payload, mode in endpoints:
             try:
-                resp = requests.post(url, json=payload, timeout=60)
+                resp = requests.post(url, json=payload, timeout=(10, 45))
                 resp.raise_for_status()
                 data = resp.json()
                 if mode == "generate":
@@ -1399,9 +1412,98 @@ def extract_pdf_ocr(
         return extract_pdf_text(path, log)
     log("  Loading glmocr pipeline (this may take a moment)...")
     try:
+        # Render each PDF page to an image and OCR page-by-page so that
+        # progress is visible and a single slow page doesn't block everything.
+        if HAS_PYMUPDF:
+            # Render all pages up-front, then feed them as ONE batch into the
+            # glmocr pipeline with stream=True. The pipeline runs load → layout
+            # → recognition as concurrent stages and fans region OCR requests
+            # out over pipeline.max_workers threads (set from OCR_WORKERS in
+            # _create_glmocr_parser), while the stream yields per-page results
+            # in order as they finish — giving both parallelism and progress.
+            doc = _fitz.open(str(path))
+            n_pages = len(doc)
+            log(f"  GLM OCR: rendering {n_pages} page(s)...")
+            page_imgs: List[bytes] = []
+            for pg_idx in range(n_pages):
+                pix = doc[pg_idx].get_pixmap(matrix=_fitz.Matrix(2.0, 2.0), alpha=False)
+                page_imgs.append(_to_rgb_bytes(pix.tobytes("png")))
+            doc.close()
+
+            log(f"  GLM OCR: {n_pages} page(s), {OCR_WORKERS} concurrent OCR request(s)...")
+
+            all_pages: List[List[Dict]] = []
+            mapping: Dict[str, str] = {}
+            t_start = time.time()
+            last_activity = [time.time()]
+            hb_stop = threading.Event()
+
+            with _create_glmocr_parser(log) as parser:
+                # Heartbeat: pages yield in order, so the first page can take
+                # minutes with nothing printed. Log queue activity every 30s
+                # of silence so the user can see the pipeline is alive.
+                def _heartbeat():
+                    while not hb_stop.wait(30):
+                        if time.time() - last_activity[0] < 30:
+                            continue
+                        msg = f"  GLM OCR working... ({time.time() - t_start:.0f}s elapsed"
+                        try:
+                            pl = getattr(parser, "_pipeline", None)
+                            stats = pl.get_queue_stats() if pl else None
+                            if stats:
+                                msg += (f", {stats['page_queue_size']} page(s) queued, "
+                                        f"{stats['region_queue_size']} region(s) awaiting OCR")
+                        except Exception:
+                            pass
+                        log(msg + ")")
+
+                threading.Thread(target=_heartbeat, daemon=True).start()
+                try:
+                    for pg_idx, results in enumerate(parser.parse(page_imgs, stream=True)):
+                        try:
+                            raw_obj: Any = None
+                            if hasattr(results, "to_json"):
+                                try:
+                                    raw_obj = results.to_json()
+                                except Exception:
+                                    raw_obj = None
+                            if raw_obj is None and hasattr(results, "pages"):
+                                raw_obj = results.pages
+                            if raw_obj is None and hasattr(results, "json_result"):
+                                raw_obj = getattr(results, "json_result")
+
+                            pg_pages = _normalize_glm_pages(raw_obj, log, f"{path.name}:p{pg_idx+1}")
+                            pg_map = _collect_glm_figure_images(
+                                results, glm_native_out_dir, ocr_images_dir,
+                                f"{path.stem}_p{pg_idx+1}_fig_", log
+                            )
+                            mapping.update(pg_map)
+                            all_pages.extend(pg_pages if pg_pages else [[]])
+                        except Exception as pg_exc:
+                            log(f"    page {pg_idx + 1} failed: {pg_exc}; skipping.")
+                            all_pages.append([])
+
+                        done = pg_idx + 1
+                        last_activity[0] = time.time()
+                        elapsed = time.time() - t_start
+                        rate = done / elapsed if elapsed > 0 else 0
+                        eta = (n_pages - done) / rate if rate > 0 else 0
+                        log(f"  GLM OCR page {done}/{n_pages} done "
+                            f"({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
+                finally:
+                    hb_stop.set()
+
+            if any(pg for pg in all_pages):
+                _apply_image_path_remap(all_pages, mapping)
+                return all_pages
+            log("  GLM OCR returned no parseable content; falling back to pymupdf.")
+            return extract_pdf_text(path, log)
+
+        # Fallback: pass entire PDF at once (no per-page progress)
         with _create_glmocr_parser(log) as parser:
             with open(str(path), "rb") as f:
                 pdf_bytes = f.read()
+            log(f"  GLM OCR: processing entire PDF (no page-by-page progress)...")
             results = parser.parse(pdf_bytes)
 
         _preserve_glm_default_output(results, glm_native_out_dir, log, path.name)
@@ -1409,7 +1511,7 @@ def extract_pdf_ocr(
             results, glm_native_out_dir, ocr_images_dir, f"{path.stem}_fig_", log
         )
 
-        raw_obj: Any = None
+        raw_obj = None
         if hasattr(results, "to_json"):
             try:
                 raw_obj = results.to_json()
@@ -1434,13 +1536,22 @@ def extract_pdf_ocr(
 
 def _create_glmocr_parser(log):
     """Build a GLM OCR parser using either default settings or Ollama backend."""
+    # Concurrency: the pipeline's recognition stage runs OCR requests through
+    # an internal thread pool sized by pipeline.max_workers (config.yaml ships
+    # with 1, which serializes everything). Raise it so multiple text regions
+    # are OCR'd in flight at once. The connection pool must be >= max_workers.
+    conc = {
+        "pipeline.max_workers": OCR_WORKERS,
+        "pipeline.ocr_api.connection_pool_size": max(8, OCR_WORKERS * 2),
+    }
     if GLMOCR_BACKEND == "ollama":
-        log(f"  GLM OCR backend: ollama ({GLMOCR_OLLAMA_MODEL})")
+        log(f"  GLM OCR backend: ollama ({GLMOCR_OLLAMA_MODEL}), {OCR_WORKERS} worker(s)")
         dotted = {
             "pipeline.maas.enabled": False,
             "pipeline.ocr_api.api_mode": "ollama_generate",
             "pipeline.ocr_api.api_url": GLMOCR_OLLAMA_URL,
             "pipeline.ocr_api.model": GLMOCR_OLLAMA_MODEL,
+            **conc,
         }
         layout_dir = GLMOCR_LAYOUT_MODEL_DIR or _autodetect_layout_model_dir()
         if layout_dir:
@@ -1453,7 +1564,7 @@ def _create_glmocr_parser(log):
             model=GLMOCR_OLLAMA_MODEL,
             _dotted=dotted,
         )
-    return _GlmOcr()
+    return _GlmOcr(_dotted=conc)
 
 
 def _is_scanned_pdf(path: Path) -> bool:
@@ -4483,9 +4594,17 @@ def _ollama_structure_template(
     if not template_text.strip() or not body_adoc.strip():
         return None
 
+    # Skip LLM pass for large documents — sending 100K+ chars would take hours
+    # and the deterministic fill already handled the structure above.
+    _OLLAMA_TEMPLATE_CHAR_LIMIT = 8000
+    if len(body_adoc) > _OLLAMA_TEMPLATE_CHAR_LIMIT:
+        return None
+
     try:
         import requests
 
+        tmpl_snippet = template_text[:4000]
+        body_snippet = body_adoc[:_OLLAMA_TEMPLATE_CHAR_LIMIT]
         prompt = (
             "You are an S1000D AsciiDoc formatter.\n"
             "Task: merge BODY content into TEMPLATE structure.\n"
@@ -4498,10 +4617,10 @@ def _ollama_structure_template(
             f"DM Type: {dm_type}\n"
             f"Title: {title}\n\n"
             "=== TEMPLATE START ===\n"
-            f"{template_text[:120000]}\n"
+            f"{tmpl_snippet}\n"
             "=== TEMPLATE END ===\n\n"
             "=== BODY START ===\n"
-            f"{body_adoc[:120000]}\n"
+            f"{body_snippet}\n"
             "=== BODY END ===\n"
         )
 
@@ -4512,13 +4631,14 @@ def _ollama_structure_template(
         else:
             root = base.rstrip("/")
 
+        _opts = {"temperature": 0, "top_p": 0.9, "num_predict": 4096}
         endpoints.append((
             base,
             {
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0, "top_p": 0.9},
+                "options": _opts,
             },
             "generate",
         ))
@@ -4530,7 +4650,7 @@ def _ollama_structure_template(
                     {"role": "user", "content": prompt}
                 ],
                 "stream": False,
-                "options": {"temperature": 0, "top_p": 0.9},
+                "options": _opts,
             },
             "chat",
         ))
@@ -4539,7 +4659,7 @@ def _ollama_structure_template(
         last_err = None
         for url, payload, mode in endpoints:
             try:
-                resp = requests.post(url, json=payload, timeout=90)
+                resp = requests.post(url, json=payload, timeout=(10, 60))
                 resp.raise_for_status()
                 data = resp.json()
                 if mode == "generate":
