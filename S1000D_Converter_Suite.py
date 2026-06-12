@@ -162,6 +162,15 @@ except ValueError:
 ODL_USE_HYBRID  = os.environ.get("S1000D_ODL_HYBRID",      "0") not in ("0", "false", "False")
 ODL_HYBRID_URL  = os.environ.get("S1000D_ODL_HYBRID_URL",  "http://127.0.0.1:5002")
 
+# PDF engine selection:
+#   auto           – heuristic routing (scanned → glmocr, text-layer → ODL/pymupdf)
+#   opendataloader – always use opendataloader-pdf for PDFs, never glmocr
+#   glmocr         – always OCR PDFs with glmocr
+PDF_ENGINE = os.environ.get("S1000D_PDF_ENGINE", "auto").strip().lower()
+if PDF_ENGINE not in {"auto", "opendataloader", "glmocr"}:
+    PDF_ENGINE = "auto"
+PDF_ENGINE_CHOICES = ("auto", "opendataloader", "glmocr")
+
 
 def _autodetect_layout_model_dir() -> str:
     """Best-effort local PP-DocLayout path resolution from HF cache."""
@@ -1047,6 +1056,113 @@ def _odl_bbox_to_list(bbox: Any) -> Optional[List[float]]:
     return None
 
 
+def _odl_cell_text(cell: dict) -> str:
+    """Collect all text content nested inside an ODL table-cell node."""
+    parts: List[str] = []
+
+    def _gather(n: Any) -> None:
+        if isinstance(n, list):
+            for x in n:
+                _gather(x)
+            return
+        if not isinstance(n, dict):
+            return
+        c = n.get("content")
+        if isinstance(c, str) and c.strip():
+            parts.append(c.strip())
+        for key in ("kids", "children"):
+            v = n.get(key)
+            if isinstance(v, list):
+                _gather(v)
+
+    direct = cell.get("content")
+    if isinstance(direct, str) and direct.strip():
+        parts.append(direct.strip())
+    _gather(cell.get("kids") or cell.get("children") or [])
+    return _sanitize_cell_for_table(" ".join(parts))
+
+
+def _odl_table_to_slots(node: dict) -> Optional[List[List[Any]]]:
+    """Convert an ODL table node (rows → cells → kids) into slot rows.
+
+    Output matches _table_slots_to_adoc_block conventions: anchor cells are
+    {"text", "colspan", "rowspan"} dicts; positions covered by a span hold
+    __MERGE_COL__ (same row) / __MERGE_ROW__ (rows below) markers.
+    """
+    rows_raw = node.get("rows")
+    if not isinstance(rows_raw, list) or not rows_raw:
+        return None
+
+    grid: Dict[Tuple[int, int], Any] = {}
+    max_r = max_c = -1
+    cells_found = False
+
+    for ri, row in enumerate(rows_raw):
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("cells")
+        if not isinstance(cells, list):
+            continue
+        try:
+            r = max(0, int(row.get("row number", ri + 1)) - 1)
+        except Exception:
+            r = ri
+        auto_c = 0
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            cells_found = True
+            try:
+                c = max(0, int(cell.get("column number", auto_c + 1)) - 1)
+            except Exception:
+                c = auto_c
+            try:
+                rs = max(1, int(cell.get("row span", 1) or 1))
+            except Exception:
+                rs = 1
+            try:
+                cs = max(1, int(cell.get("column span", 1) or 1))
+            except Exception:
+                cs = 1
+
+            if not isinstance(grid.get((r, c)), dict):
+                grid[(r, c)] = {"text": _odl_cell_text(cell),
+                                "colspan": cs, "rowspan": rs}
+            for rr in range(r, r + rs):
+                for cc in range(c, c + cs):
+                    if rr == r and cc == c:
+                        continue
+                    marker = "__MERGE_COL__" if rr == r else "__MERGE_ROW__"
+                    grid.setdefault((rr, cc), marker)
+
+            max_r = max(max_r, r + rs - 1)
+            max_c = max(max_c, c + cs - 1)
+            auto_c = c + cs
+
+    if not cells_found or max_r < 0 or max_c < 0:
+        return None
+
+    return [[grid.get((rr, cc), "") for cc in range(max_c + 1)]
+            for rr in range(max_r + 1)]
+
+
+def _odl_slots_to_pipe_text(slots: List[List[Any]]) -> str:
+    """Render slot rows to pipe-delimited text (fallback content for XML/search)."""
+    lines: List[str] = []
+    for row in slots:
+        cells: List[str] = []
+        for tok in row:
+            if tok in ("__MERGE_COL__", "__MERGE_ROW__"):
+                continue
+            if isinstance(tok, dict):
+                cells.append((tok.get("text") or "").strip())
+            else:
+                cells.append(str(tok).strip())
+        if any(cells):
+            lines.append(" | ".join(cells))
+    return "\n".join(lines).strip()
+
+
 def _odl_flatten_table(node: dict) -> str:
     """Convert an ODL table node into a pipe-delimited text representation."""
     for key in ("rows", "cells", "content"):
@@ -1072,6 +1188,13 @@ def _odl_flatten_table(node: dict) -> str:
                     if cells:
                         lines.append(" | ".join(cells))
                 elif isinstance(row, dict):
+                    cells_raw = row.get("cells")
+                    if isinstance(cells_raw, list):
+                        cells = [_odl_cell_text(c) for c in cells_raw
+                                 if isinstance(c, dict)]
+                        if any(cells):
+                            lines.append(" | ".join(cells))
+                        continue
                     ct = (row.get("content") or row.get("text") or "").strip()
                     if ct:
                         lines.append(ct)
@@ -1216,10 +1339,18 @@ def _odl_parse_root(root: Any, img_files: List[Path],
 
         # ── TABLE ────────────────────────────────────────────────────────
         elif typ == "table":
-            table_text = _odl_flatten_table(node) or _odl_node_text(node)
+            # Preferred: structured slots preserving row/col spans (same
+            # downstream format as GLM/HTML tables → proper AsciiDoc tables).
+            slots = _odl_table_to_slots(node)
+            if slots:
+                meta["table_slots"] = slots
+                table_text = _odl_slots_to_pipe_text(slots)
+            else:
+                table_text = _odl_flatten_table(node) or _odl_node_text(node)
             if table_text:
                 collected.setdefault(pg, []).append(_el(table_text, "table", pg, meta))
             # Still descend so nested caption/footnote nodes are captured
+            # (cells live under "rows", which _walk_kids does not visit).
             _walk_kids(node)
             return
 
@@ -2520,8 +2651,23 @@ def extract_file(
     log(f"  Extracting: {path.name}  [{ext}]")
 
     if ext == ".pdf":
-        if force_ocr or _is_scanned_pdf(path):
-            log("  → scanned/image PDF → glmocr")
+        # Explicit engine override: opendataloader-pdf only, glmocr never invoked.
+        if PDF_ENGINE == "opendataloader":
+            if HAS_OPENDATALOADER_PDF:
+                log("  → PDF engine: opendataloader-pdf (GLM-OCR disabled)")
+                if _is_scanned_pdf(path):
+                    log("  NOTE: PDF appears scanned/non-searchable; "
+                        "opendataloader-pdf works best on text-layer PDFs.")
+                pages = extract_pdf_opendataloader(path, log, ocr_images_dir)
+                if pages:
+                    return pages
+                log("  opendataloader-pdf returned no parseable content; falling back to pymupdf.")
+                return extract_pdf_text(path, log)
+            log("  PDF engine 'opendataloader' selected but opendataloader-pdf is not "
+                "installed; using auto routing instead.")
+
+        if PDF_ENGINE == "glmocr" or force_ocr or _is_scanned_pdf(path):
+            log("  → scanned/forced PDF → glmocr")
             return extract_pdf_ocr(path, log, glm_native_out_dir, ocr_images_dir)
         else:
             if HAS_OPENDATALOADER_PDF:
@@ -5010,9 +5156,10 @@ def build_package(
     if ext == ".docx":
         # Keep extracted DOCX images next to generated ADOC for stable image:: paths.
         docx_media_dir = out_root / "04_adoc"
-    # For any OCR path (scanned PDF, standalone image, or image-heavy/force-OCR DOCX),
-    # save figure crops alongside the ADOC output so image:: macros resolve correctly.
-    if ext in IMAGE_EXTS or (ext == ".pdf" and (force_ocr or _is_scanned_pdf(src_path))) or (
+    # For any figure-producing path (PDF via glmocr OR opendataloader, standalone image,
+    # or image-heavy/force-OCR DOCX), save extracted figures alongside the ADOC output
+    # so image:: macros resolve correctly.
+    if ext in IMAGE_EXTS or ext == ".pdf" or (
         ext == ".docx" and (force_ocr or _is_image_heavy_docx(src_path))
     ):
         ocr_images_dir = out_root / "04_adoc"
@@ -5269,6 +5416,7 @@ class ConverterSuiteApp(tk.Tk):
         self.glmocr_ollama_model_var = tk.StringVar(value=GLMOCR_OLLAMA_MODEL)
         self.odl_use_hybrid_var    = tk.BooleanVar(value=ODL_USE_HYBRID)
         self.odl_hybrid_url_var    = tk.StringVar(value=ODL_HYBRID_URL)
+        self.pdf_engine_var        = tk.StringVar(value=PDF_ENGINE)
         self.dm_desc_var           = tk.StringVar(value=DM_TYPE_DESC["auto"])
         self._progress_var         = tk.DoubleVar(value=0.0)
         self._status_var           = tk.StringVar(value="")
@@ -5428,24 +5576,34 @@ class ConverterSuiteApp(tk.Tk):
             ttk.Entry(frm, textvariable=var, width=w
                       ).grid(row=r, column=1, columnspan=2, sticky="w", pady=(2, 0))
 
-        # ── ODL Hybrid ────────────────────────────────────────────────────────
-        sep = ttk.Label(frm, text="── OpenDataLoader Fallback ──",
+        # ── PDF Engine / ODL ─────────────────────────────────────────────────
+        sep = ttk.Label(frm, text="── PDF Engine / OpenDataLoader ──",
                         background=self.CARD, foreground=self.MUTE,
                         font=("Segoe UI", 8, "italic"))
         sep.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 2))
 
+        ttk.Label(frm, text="PDF Engine:", style="Card.TLabel"
+                  ).grid(row=8, column=0, sticky="w", padx=(0, 8), pady=(0, 2))
+        eng_menu = ttk.OptionMenu(frm, self.pdf_engine_var,
+                                  self.pdf_engine_var.get(), *PDF_ENGINE_CHOICES)
+        eng_menu.config(width=16)
+        eng_menu.grid(row=8, column=1, sticky="w", pady=(0, 2))
+        ttk.Label(frm, text="opendataloader = searchable PDFs without GLM-OCR",
+                  background=self.CARD, foreground=self.MUTE, font=sf
+                  ).grid(row=8, column=2, sticky="w", padx=(8, 0))
+
         ttk.Checkbutton(frm, text="ODL Hybrid mode  (requires opendataloader-pdf-hybrid server)",
                         variable=self.odl_use_hybrid_var
-                        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 2))
+                        ).grid(row=9, column=0, columnspan=3, sticky="w", pady=(0, 2))
 
         ttk.Label(frm, text="ODL Hybrid URL:", style="Card.TLabel"
-                  ).grid(row=9, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
+                  ).grid(row=10, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
         ttk.Entry(frm, textvariable=self.odl_hybrid_url_var, width=42
-                  ).grid(row=9, column=1, columnspan=2, sticky="w", pady=(2, 0))
+                  ).grid(row=10, column=1, columnspan=2, sticky="w", pady=(2, 0))
 
         # Output format checkboxes
         fmt = ttk.Frame(frm, style="Card.TFrame")
-        fmt.grid(row=10, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        fmt.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Label(fmt, text="Outputs:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         for txt, var in [
             ("Raw JSON",      self.out_raw),
@@ -5686,7 +5844,10 @@ class ConverterSuiteApp(tk.Tk):
         force_ocr = self.force_ocr.get()
         global OLLAMA_MODEL, USE_OLLAMA_TEMPLATE
         global GLMOCR_BACKEND, GLMOCR_OLLAMA_URL, GLMOCR_OLLAMA_MODEL
-        global ODL_USE_HYBRID, ODL_HYBRID_URL
+        global ODL_USE_HYBRID, ODL_HYBRID_URL, PDF_ENGINE
+        PDF_ENGINE = (self.pdf_engine_var.get().strip().lower() or "auto")
+        if PDF_ENGINE not in PDF_ENGINE_CHOICES:
+            PDF_ENGINE = "auto"
         OLLAMA_MODEL = self.ollama_model_var.get().strip() or OLLAMA_MODEL
         USE_OLLAMA_TEMPLATE = bool(self.use_ollama_template.get())
         GLMOCR_BACKEND = (self.glmocr_backend_var.get().strip().lower() or "default")
@@ -5711,6 +5872,7 @@ class ConverterSuiteApp(tk.Tk):
             "=" * 50,
             f"Output root : {out_root}",
             f"DM type     : {dm_type}",
+            f"PDF engine  : {PDF_ENGINE}",
             f"Force OCR   : {force_ocr}",
             f"OCR backend : {GLMOCR_BACKEND}",
             f"Ollama pass : {USE_OLLAMA_TEMPLATE}",

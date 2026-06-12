@@ -27,4 +27,4 @@ pydantic>=2.0.0
 pypdfium2>=4.20.0
 
 # ── Optional: high-accuracy PDF extraction (OpenDataLoader) ──────────────────
-# opendataloader-pdf>=0.1.0
+opendataloader-pdf
