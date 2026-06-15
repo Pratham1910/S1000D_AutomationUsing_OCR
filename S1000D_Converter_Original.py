@@ -23,7 +23,6 @@ Dependencies (install what you need; others degrade gracefully):
     pip install glmocr          # for scanned PDFs and images
     pip install opendataloader-pdf  # PDF extraction alternative when not using GLM OCR
     pandoc (CLI)                # for DOCX / MD → AsciiDoc conversion
-    
 """
 
 # ─── stdlib ─────────────────────────────────────────────────────────────────
@@ -60,13 +59,6 @@ try:
     HAS_OPENDATALOADER_PDF = True
 except ImportError:
     HAS_OPENDATALOADER_PDF = False
-
-try:
-    from PIL import Image as _PILImage
-    import io as _pil_io
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
 
 # ────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -149,18 +141,6 @@ if GLMOCR_BACKEND not in {"default", "ollama"}:
 GLMOCR_OLLAMA_URL = os.environ.get("S1000D_GLMOCR_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 GLMOCR_OLLAMA_MODEL = os.environ.get("S1000D_GLMOCR_OLLAMA_MODEL", "glm-ocr:latest")
 GLMOCR_LAYOUT_MODEL_DIR = os.environ.get("S1000D_GLMOCR_LAYOUT_MODEL_DIR", "").strip()
-
-# Number of pages OCR'd concurrently. The backend (GPU / Ollama server) is the
-# real bottleneck — raising this past what the server can serve in parallel
-# just queues requests. With Ollama, also raise OLLAMA_NUM_PARALLEL server-side.
-try:
-    OCR_WORKERS = max(1, int(os.environ.get("S1000D_OCR_WORKERS", "4")))
-except ValueError:
-    OCR_WORKERS = 4
-
-# OpenDataLoader-PDF config (fallback high-accuracy PDF extractor)
-ODL_USE_HYBRID  = os.environ.get("S1000D_ODL_HYBRID",      "0") not in ("0", "false", "False")
-ODL_HYBRID_URL  = os.environ.get("S1000D_ODL_HYBRID_URL",  "http://127.0.0.1:5002")
 
 
 def _autodetect_layout_model_dir() -> str:
@@ -316,10 +296,6 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
     try:
         import requests
 
-        # Cap table input — large tables can't be meaningfully repaired by LLM anyway
-        if len(table_text) > 6000:
-            return None
-
         prompt = (
             "You are an AsciiDoc table expert.\n"
             "Repair the following table into valid AsciiDoc table markup.\n"
@@ -329,7 +305,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
             "2) Preserve all source content words; do not drop data.\n"
             "3) Do not add explanations.\n\n"
             "TABLE INPUT:\n"
-            f"{table_text[:6000]}\n"
+            f"{table_text[:40000]}\n"
         )
 
         endpoints: List[Tuple[str, Dict[str, Any], str]] = []
@@ -339,14 +315,13 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
         else:
             root = base.rstrip("/")
 
-        _opts = {"temperature": 0, "top_p": 0.9, "num_predict": 2048}
         endpoints.append((
             base,
             {
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": _opts,
+                "options": {"temperature": 0, "top_p": 0.9},
             },
             "generate",
         ))
@@ -356,7 +331,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
                 "model": OLLAMA_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "options": _opts,
+                "options": {"temperature": 0, "top_p": 0.9},
             },
             "chat",
         ))
@@ -364,7 +339,7 @@ def _ollama_repair_merged_table(table_text: str) -> Optional[str]:
         out = ""
         for url, payload, mode in endpoints:
             try:
-                resp = requests.post(url, json=payload, timeout=(10, 45))
+                resp = requests.post(url, json=payload, timeout=60)
                 resp.raise_for_status()
                 data = resp.json()
                 if mode == "generate":
@@ -1013,348 +988,119 @@ def _extract_pdf_link_elements(page, pg_idx: int) -> List[Dict]:
     return link_elements
 
 
-# ── ODL element type constants ────────────────────────────────────────────────
-_ODL_FIGURE_TYPES = frozenset({"image", "picture", "figure", "photo"})
-_ODL_IMG_EXTS     = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif",
-                                ".bmp", ".webp", ".gif"})
-
-
 def _odl_bbox_to_list(bbox: Any) -> Optional[List[float]]:
-    """Normalise an ODL bounding box to [left, bottom, right, top] (PDF points).
-    ODL coordinate origin is bottom-left; values in 1/72-inch points."""
+    """Normalize opendataloader bounding box shapes to [x0, y0, x1, y1]."""
     if bbox is None:
         return None
     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         try:
-            return [float(v) for v in bbox[:4]]
+            return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
         except Exception:
             return None
     if isinstance(bbox, dict):
+        # Common key variants from document parsers.
         kmap = {k.lower().replace("_", " "): v for k, v in bbox.items()}
-        left   = kmap.get("left",   kmap.get("x0", kmap.get("x")))
-        bottom = kmap.get("bottom", kmap.get("y0", kmap.get("y")))
-        right  = kmap.get("right",  kmap.get("x1"))
-        top    = kmap.get("top",    kmap.get("y1"))
+        left = kmap.get("left", kmap.get("x0", kmap.get("x")))
+        top = kmap.get("top", kmap.get("y0", kmap.get("y")))
+        right = kmap.get("right", kmap.get("x1"))
+        bottom = kmap.get("bottom", kmap.get("y1"))
         if right is None and left is not None and kmap.get("width") is not None:
-            right = float(left) + float(kmap["width"])
-        if top is None and bottom is not None and kmap.get("height") is not None:
-            top = float(bottom) + float(kmap["height"])
+            right = float(left) + float(kmap.get("width"))
+        if bottom is None and top is not None and kmap.get("height") is not None:
+            bottom = float(top) + float(kmap.get("height"))
         try:
-            if None not in (left, bottom, right, top):
-                return [float(left), float(bottom), float(right), float(top)]
+            if None not in (left, top, right, bottom):
+                return [float(left), float(top), float(right), float(bottom)]
         except Exception:
             return None
     return None
 
 
-def _odl_flatten_table(node: dict) -> str:
-    """Convert an ODL table node into a pipe-delimited text representation."""
-    for key in ("rows", "cells", "content"):
-        rows_raw = node.get(key)
-        if rows_raw is None:
-            continue
-        if isinstance(rows_raw, str):
-            return rows_raw.strip()
-        if isinstance(rows_raw, list):
-            lines = []
-            for row in rows_raw:
-                if isinstance(row, str):
-                    lines.append(row.strip())
-                elif isinstance(row, list):
-                    cells = []
-                    for cell in row:
-                        if isinstance(cell, str):
-                            cells.append(cell.strip())
-                        elif isinstance(cell, dict):
-                            ct = (cell.get("content") or cell.get("text") or "").strip()
-                            if ct:
-                                cells.append(ct)
-                    if cells:
-                        lines.append(" | ".join(cells))
-                elif isinstance(row, dict):
-                    ct = (row.get("content") or row.get("text") or "").strip()
-                    if ct:
-                        lines.append(ct)
-            return "\n".join(lines)
-    return ""
-
-
-def _odl_node_text(node: dict) -> str:
-    """Return the best available text content from an ODL JSON node."""
-    for k in ("content", "text", "value", "description"):
-        v = node.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    typ = str(node.get("type", "")).lower()
-    if typ == "table":
-        return _odl_flatten_table(node)
-    return ""
-
-
-def _odl_run_convert(path: Path, tdir: str, *,
-                     use_hybrid: bool, use_struct: bool) -> Optional[dict]:
-    """Call opendataloader_pdf.convert and return the parsed JSON root dict."""
-    kwargs: dict = {
-        "input_path": str(path),
-        "output_dir": tdir,
-        "format": "json",
-        "image_output": "external",
-        "image_format": "png",
-    }
-    if use_struct:
-        kwargs["use_struct_tree"] = True
-    if use_hybrid:
-        kwargs["hybrid"] = "docling-fast"
-        kwargs["hybrid_mode"] = "full"   # enables LaTeX formulas + AI picture descriptions
-
-    # Some older installs may not accept all kwargs; degrade gracefully.
-    try:
-        _odl_pdf_convert(**kwargs)
-    except TypeError:
-        safe = {k: v for k, v in kwargs.items()
-                if k in ("input_path", "output_dir", "format")}
-        _odl_pdf_convert(**safe)
-
-    json_files = sorted(Path(tdir).glob("*.json"))
-    if not json_files:
-        return None
-    try:
-        return json.loads(json_files[0].read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return None
-
-
-def _odl_parse_root(root: Any, img_files: List[Path],
-                    ocr_images_dir: Optional[Path]) -> List[List[Dict]]:
-    """Walk the ODL JSON tree and emit pages-of-element-dicts."""
-    collected: Dict[int, List[Dict]] = {}
-    img_queue = list(img_files)
-    img_cursor = [0]   # mutable counter shared across nested calls
-
-    def _link_image() -> Optional[str]:
-        """Pop the next extracted image, copy to ocr_images_dir, return filename."""
-        idx = img_cursor[0]
-        if idx >= len(img_queue):
-            return None
-        img_cursor[0] += 1
-        src = img_queue[idx]
-        if ocr_images_dir:
-            ocr_images_dir.mkdir(parents=True, exist_ok=True)
-            dest = ocr_images_dir / src.name
-            if not dest.exists():
-                try:
-                    shutil.copy2(str(src), str(dest))
-                except Exception:
-                    pass
-            return src.name
-        return str(src)
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                _walk(item)
-            return
-        if not isinstance(node, dict):
-            return
-
-        typ = str(node.get("type", "paragraph")).lower()
-
-        page_no = node.get("page number", node.get("page", 1))
-        try:
-            pg = max(0, int(page_no) - 1)
-        except Exception:
-            pg = 0
-
-        meta: Dict[str, Any] = {}
-
-        # Bounding box
-        bb = _odl_bbox_to_list(
-            node.get("bounding box") or node.get("bounding_box") or node.get("bbox"))
-        if bb:
-            meta["bbox_2d"] = bb
-
-        # Font metadata
-        try:
-            fs = float(node.get("font size") or node.get("font_size") or 0)
-        except Exception:
-            fs = 0.0
-        if fs > 0:
-            meta["font_size"] = fs
-        font_name = str(node.get("font") or "").lower()
-
-        # ── HEADING ──────────────────────────────────────────────────────
-        if typ in ("heading", "title", "header"):
-            text = _odl_node_text(node)
-            if text:
-                level_raw = node.get("heading level") or node.get("level")
-                try:
-                    level = int(level_raw)
-                except Exception:
-                    # "Title" → 1, numeric string → int, fallback → 1
-                    level = 1 if str(level_raw or "").lower() in ("title", "1", "") else 2
-                meta["heading_level"] = level
-                collected.setdefault(pg, []).append(
-                    _el(text, "paragraph_title", pg, meta))
-
-        # ── FIGURE / PICTURE / IMAGE ─────────────────────────────────────
-        elif typ in _ODL_FIGURE_TYPES:
-            img_name = _link_image()
-            if img_name:
-                meta["image_path"] = img_name
-            # Content: prefer description (hybrid AI) then any text, then placeholder
-            desc = node.get("description", "")
-            text = _odl_node_text(node)
-            display = text or (f"[Figure] {desc}".strip() if desc else "[Figure]")
-            collected.setdefault(pg, []).append(_el(display, "figure", pg, meta))
-
-        # ── FORMULA ──────────────────────────────────────────────────────
-        elif typ == "formula":
-            text = _odl_node_text(node)
-            if text:
-                meta["is_formula"] = True
-                collected.setdefault(pg, []).append(_el(text, "para", pg, meta))
-
-        # ── TABLE ────────────────────────────────────────────────────────
-        elif typ == "table":
-            table_text = _odl_flatten_table(node) or _odl_node_text(node)
-            if table_text:
-                collected.setdefault(pg, []).append(_el(table_text, "table", pg, meta))
-            # Still descend so nested caption/footnote nodes are captured
-            _walk_kids(node)
-            return
-
-        # ── LIST / LIST ITEM ─────────────────────────────────────────────
-        elif typ in ("list", "list_item"):
-            text = _odl_node_text(node)
-            if text:
-                collected.setdefault(pg, []).append(_el(text, "list", pg, meta))
-            _walk_kids(node)
-            return
-
-        # ── CAPTION ──────────────────────────────────────────────────────
-        elif typ == "caption":
-            text = _odl_node_text(node)
-            if text:
-                collected.setdefault(pg, []).append(_el(text, "caption", pg, meta))
-
-        # ── FOOTNOTE / FOOTER ────────────────────────────────────────────
-        elif typ in ("footnote", "footer", "footnote_text"):
-            text = _odl_node_text(node)
-            if text:
-                collected.setdefault(pg, []).append(_el(text, "para", pg, meta))
-
-        # ── CODE BLOCK ───────────────────────────────────────────────────
-        elif typ in ("code", "code_block", "pre"):
-            text = _odl_node_text(node)
-            if text:
-                collected.setdefault(pg, []).append(_el(text, "para", pg, meta))
-
-        # ── DEFAULT: paragraph + heuristic heading detection ─────────────
-        else:
-            text = _odl_node_text(node)
-            if text:
-                is_heading = (
-                    fs >= 14
-                    or ("bold" in font_name and fs >= 11)
-                    or typ in ("subheading", "subtitle")
-                )
-                native = "paragraph_title" if is_heading else "paragraph"
-                if is_heading:
-                    meta["heading_level"] = 2
-                collected.setdefault(pg, []).append(_el(text, native, pg, meta))
-
-        _walk_kids(node)
-
-    def _walk_kids(node: dict) -> None:
-        for key in ("kids", "children", "items", "elements", "content_list"):
-            v = node.get(key)
-            if isinstance(v, list):
-                for child in v:
-                    _walk(child)
-
-    _walk(root)
-
-    if not collected:
-        return []
-    return [collected[pg] for pg in sorted(collected.keys())]
-
-
-def extract_pdf_opendataloader(
-    path: Path,
-    log,
-    ocr_images_dir: Optional[Path] = None,
-) -> List[List[Dict]]:
-    """High-accuracy PDF extraction via opendataloader-pdf.
-
-    Extraction strategy (highest → lowest accuracy):
-      1. Hybrid mode (docling-fast + full) — complex tables, formulas, AI figure captions.
-         Requires `opendataloader-pdf-hybrid` server running on ODL_HYBRID_URL.
-      2. Local mode + use_struct_tree=True — uses native PDF accessibility tags.
-      3. Local mode (plain) — deterministic XY-Cut++ layout, fastest, no GPU.
-
-    All extracted images are copied to *ocr_images_dir* and linked into element dicts.
-    """
+def extract_pdf_opendataloader(path: Path, log) -> List[List[Dict]]:
+    """Extract PDF using opendataloader-pdf JSON output and normalize into elements."""
     if not HAS_OPENDATALOADER_PDF:
         return []
 
     try:
         with tempfile.TemporaryDirectory(prefix="odl_pdf_") as tdir:
-            root: Optional[dict] = None
-
-            # ── Pass 1: hybrid mode (needs server) ───────────────────────
-            if ODL_USE_HYBRID:
-                log("  opendataloader-pdf [hybrid + struct_tree]…")
-                try:
-                    root = _odl_run_convert(
-                        path, tdir, use_hybrid=True, use_struct=True)
-                except Exception as exc:
-                    log(f"    hybrid mode failed ({exc}); falling back to local.")
-                    root = None
-
-            # ── Pass 2: local + use_struct_tree ──────────────────────────
-            if root is None:
-                log("  opendataloader-pdf [local, use_struct_tree=True]…")
-                try:
-                    root = _odl_run_convert(
-                        path, tdir, use_hybrid=False, use_struct=True)
-                except Exception as exc:
-                    log(f"    struct_tree mode failed ({exc}); trying plain.")
-                    root = None
-
-            # ── Pass 3: plain local ───────────────────────────────────────
-            if root is None:
-                log("  opendataloader-pdf [local, plain]…")
-                try:
-                    root = _odl_run_convert(
-                        path, tdir, use_hybrid=False, use_struct=False)
-                except Exception as exc:
-                    log(f"    opendataloader-pdf failed: {exc}")
-                    return []
-
-            if root is None:
-                log("  opendataloader-pdf: no JSON output produced.")
-                return []
-
-            # Collect all extracted image files (image_output="external")
-            img_files: List[Path] = sorted(
-                p for p in Path(tdir).rglob("*")
-                if p.suffix.lower() in _ODL_IMG_EXTS
+            _odl_pdf_convert(
+                input_path=str(path),
+                output_dir=tdir,
+                format=["json"],
+                quiet=True,
+                keep_line_breaks=True,
             )
 
-            pages = _odl_parse_root(root, img_files, ocr_images_dir)
+            out_dir = Path(tdir)
+            json_files = sorted(out_dir.glob("*.json"))
+            if not json_files:
+                return []
 
-        el_count = sum(len(p) for p in pages)
-        fig_count = sum(
-            1 for p in pages for e in p
-            if e.get("native_label") == "figure" and e.get("image_path")
-        )
-        log(f"  opendataloader-pdf: {len(pages)} page(s), "
-            f"{el_count} element(s), {fig_count} figure(s) extracted.")
-        return pages
+            try:
+                root = json.loads(json_files[0].read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                return []
 
-    except Exception as exc:
-        log(f"  opendataloader-pdf extraction failed: {exc}")
-        traceback.print_exc()
+            collected: Dict[int, List[Dict]] = {}
+
+            def _walk(node: Any):
+                if isinstance(node, list):
+                    for item in node:
+                        _walk(item)
+                    return
+                if not isinstance(node, dict):
+                    return
+
+                text = ""
+                for k in ("content", "text", "value"):
+                    v = node.get(k)
+                    if isinstance(v, str) and v.strip():
+                        text = v.strip()
+                        break
+
+                if text:
+                    page_no = node.get("page number", node.get("page", 1))
+                    try:
+                        pg = max(0, int(page_no) - 1)
+                    except Exception:
+                        pg = 0
+
+                    typ = str(node.get("type", "paragraph")).lower()
+                    try:
+                        fs = float(node.get("font size", 0) or 0)
+                    except Exception:
+                        fs = 0.0
+                    if typ in ("heading", "title") or fs >= 14:
+                        label = "paragraph_title"
+                    else:
+                        label = "paragraph"
+
+                    meta: Dict[str, Any] = {
+                        "label": typ,
+                    }
+                    bb = _odl_bbox_to_list(node.get("bounding box"))
+                    if bb:
+                        meta["bbox_2d"] = bb
+                    if fs > 0:
+                        meta["font_size"] = fs
+
+                    collected.setdefault(pg, []).append(_el(text, label, pg, meta))
+
+                # Walk nested children, if any.
+                if isinstance(node.get("kids"), list):
+                    _walk(node["kids"])
+
+            _walk(root)
+
+            if not collected:
+                return []
+
+            pages: List[List[Dict]] = []
+            for pg in sorted(collected.keys()):
+                pages.append(collected[pg])
+            return pages
+    except Exception as e:
+        log(f"  opendataloader-pdf extraction failed: {e}")
         return []
 
 
@@ -1396,155 +1142,24 @@ def extract_pdf_text(path: Path, log) -> List[List[Dict]]:
     return pages
 
 
-def extract_pdf_ocr(
-    path: Path,
-    log,
-    glm_native_out_dir: Optional[Path] = None,
-    ocr_images_dir: Optional[Path] = None,
-) -> List[List[Dict]]:
+def extract_pdf_ocr(path: Path, log, glm_native_out_dir: Optional[Path] = None) -> List[List[Dict]]:
     """Use glmocr to OCR a scanned/image PDF. Returns list of pages."""
     if not HAS_GLMOCR:
         log("  WARNING: glmocr not installed – trying opendataloader-pdf, then pymupdf.")
-        pages = (extract_pdf_opendataloader(path, log, ocr_images_dir)
-                 if HAS_OPENDATALOADER_PDF else [])
+        pages = extract_pdf_opendataloader(path, log) if HAS_OPENDATALOADER_PDF else []
         if pages:
             return pages
         return extract_pdf_text(path, log)
     log("  Loading glmocr pipeline (this may take a moment)...")
     try:
-        # Render each PDF page to an image and OCR page-by-page so that
-        # progress is visible and a single slow page doesn't block everything.
-        if HAS_PYMUPDF:
-            # Render all pages up-front, then feed them as ONE batch into the
-            # glmocr pipeline with stream=True. The pipeline runs load → layout
-            # → recognition as concurrent stages and fans region OCR requests
-            # out over pipeline.max_workers threads (set from OCR_WORKERS in
-            # _create_glmocr_parser), while the stream yields per-page results
-            # in order as they finish — giving both parallelism and progress.
-            doc = _fitz.open(str(path))
-            n_pages = len(doc)
-            log(f"  GLM OCR: rendering {n_pages} page(s)...")
-            page_imgs: List[bytes] = []
-            for pg_idx in range(n_pages):
-                pix = doc[pg_idx].get_pixmap(matrix=_fitz.Matrix(2.0, 2.0), alpha=False)
-                page_imgs.append(_to_rgb_bytes(pix.tobytes("png")))
-            doc.close()
-
-            log(f"  GLM OCR: {n_pages} page(s), {OCR_WORKERS} concurrent OCR request(s)...")
-
-            all_pages: List[List[Dict]] = []
-            mapping: Dict[str, str] = {}
-            doc_md_parts: List[str] = []
-            t_start = time.time()
-            last_activity = [time.time()]
-            hb_stop = threading.Event()
-
-            with _create_glmocr_parser(log) as parser:
-                # Heartbeat: pages yield in order, so the first page can take
-                # minutes with nothing printed. Log queue activity every 30s
-                # of silence so the user can see the pipeline is alive.
-                def _heartbeat():
-                    while not hb_stop.wait(30):
-                        if time.time() - last_activity[0] < 30:
-                            continue
-                        msg = f"  GLM OCR working... ({time.time() - t_start:.0f}s elapsed"
-                        try:
-                            pl = getattr(parser, "_pipeline", None)
-                            stats = pl.get_queue_stats() if pl else None
-                            if stats:
-                                msg += (f", {stats['page_queue_size']} page(s) queued, "
-                                        f"{stats['region_queue_size']} region(s) awaiting OCR")
-                        except Exception:
-                            pass
-                        log(msg + ")")
-
-                threading.Thread(target=_heartbeat, daemon=True).start()
-                try:
-                    for pg_idx, results in enumerate(parser.parse(page_imgs, stream=True, save_layout_visualization=False)):
-                        try:
-                            raw_obj: Any = None
-                            if hasattr(results, "to_json"):
-                                try:
-                                    raw_obj = results.to_json()
-                                except Exception:
-                                    raw_obj = None
-                            if raw_obj is None and hasattr(results, "pages"):
-                                raw_obj = results.pages
-                            if raw_obj is None and hasattr(results, "json_result"):
-                                raw_obj = getattr(results, "json_result")
-
-                            pg_pages = _normalize_glm_pages(raw_obj, log, f"{path.name}:p{pg_idx+1}")
-
-                            # Collect page markdown for the combined document .md
-                            pg_md = getattr(results, "markdown_result", None)
-                            if pg_md and pg_md.strip():
-                                doc_md_parts.append(_strip_md_fences(pg_md))
-
-                            # Preserve native GLM output (json/md/imgs) per page.
-                            pg_glm_dir = None
-                            if glm_native_out_dir is not None:
-                                pg_glm_dir = glm_native_out_dir / f"page_{pg_idx+1:04d}"
-                                try:
-                                    pg_glm_dir.mkdir(parents=True, exist_ok=True)
-                                    if hasattr(results, "save"):
-                                        results.save(output_dir=str(pg_glm_dir))
-                                        _clean_saved_md_fences(pg_glm_dir)
-                                except Exception as glm_exc:
-                                    log(f"    page {pg_idx+1}: GLM native save failed: {glm_exc}")
-
-                            pg_map = _collect_glm_figure_images(
-                                results, pg_glm_dir, ocr_images_dir,
-                                f"{path.stem}_p{pg_idx+1}_fig_", log
-                            )
-                            mapping.update(pg_map)
-                            all_pages.extend(pg_pages if pg_pages else [[]])
-                        except Exception as pg_exc:
-                            log(f"    page {pg_idx + 1} failed: {pg_exc}; skipping.")
-                            all_pages.append([])
-
-                        done = pg_idx + 1
-                        last_activity[0] = time.time()
-                        elapsed = time.time() - t_start
-                        rate = done / elapsed if elapsed > 0 else 0
-                        eta = (n_pages - done) / rate if rate > 0 else 0
-                        log(f"  GLM OCR page {done}/{n_pages} done "
-                            f"({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
-                finally:
-                    hb_stop.set()
-
-            if glm_native_out_dir is not None:
-                # Write ONE combined markdown for the whole document (the
-                # md→adoc pipeline consumes this, like the old single-parse
-                # behaviour), alongside the per-page native output folders.
-                try:
-                    glm_native_out_dir.mkdir(parents=True, exist_ok=True)
-                    combined_md = "\n\n".join(doc_md_parts).strip() + "\n"
-                    md_out = glm_native_out_dir / f"{path.stem}.md"
-                    md_out.write_text(combined_md, encoding="utf-8")
-                    log(f"  Combined GLM markdown: {md_out}")
-                except Exception as md_exc:
-                    log(f"  Could not write combined GLM markdown: {md_exc}")
-                log(f"  Preserved native GLM output at: {glm_native_out_dir}")
-
-            if any(pg for pg in all_pages):
-                _apply_image_path_remap(all_pages, mapping)
-                return all_pages
-            log("  GLM OCR returned no parseable content; falling back to pymupdf.")
-            return extract_pdf_text(path, log)
-
-        # Fallback: pass entire PDF at once (no per-page progress)
         with _create_glmocr_parser(log) as parser:
             with open(str(path), "rb") as f:
                 pdf_bytes = f.read()
-            log(f"  GLM OCR: processing entire PDF (no page-by-page progress)...")
             results = parser.parse(pdf_bytes, save_layout_visualization=False)
 
         _preserve_glm_default_output(results, glm_native_out_dir, log, path.name)
-        mapping = _collect_glm_figure_images(
-            results, glm_native_out_dir, ocr_images_dir, f"{path.stem}_fig_", log
-        )
 
-        raw_obj = None
+        raw_obj: Any = None
         if hasattr(results, "to_json"):
             try:
                 raw_obj = results.to_json()
@@ -1557,7 +1172,6 @@ def extract_pdf_ocr(
 
         pages = _normalize_glm_pages(raw_obj, log, path.name)
         if pages:
-            _apply_image_path_remap(pages, mapping)
             return pages
 
         log("  GLM OCR returned no parseable pages; falling back to pymupdf text extraction.")
@@ -1569,18 +1183,12 @@ def extract_pdf_ocr(
 
 def _create_glmocr_parser(log):
     """Build a GLM OCR parser using either default settings or Ollama backend."""
-    # Concurrency: raise max_workers so regions are OCR'd in parallel.
-    # max_tokens: 8192 (config default) lets Ollama generate thousands of tokens
-    # per region, causing multi-minute hangs.  Cap at 2048 — sufficient for any
-    # real OCR region.  Also cap request_timeout to avoid 10-min waits on hang.
     conc = {
-        "pipeline.max_workers": OCR_WORKERS,
-        "pipeline.ocr_api.connection_pool_size": max(8, OCR_WORKERS * 2),
         "pipeline.ocr_api.request_timeout": 90,
         "pipeline.page_loader.max_tokens": 2048,
     }
     if GLMOCR_BACKEND == "ollama":
-        log(f"  GLM OCR backend: ollama ({GLMOCR_OLLAMA_MODEL}), {OCR_WORKERS} worker(s)")
+        log(f"  GLM OCR backend: ollama ({GLMOCR_OLLAMA_MODEL})")
         dotted = {
             "pipeline.maas.enabled": False,
             "pipeline.ocr_api.api_mode": "ollama_generate",
@@ -1613,170 +1221,6 @@ def _is_scanned_pdf(path: Path) -> bool:
         return chars < 150
     except Exception:
         return False
-
-
-def _is_image_heavy_docx(path: Path) -> bool:
-    """Heuristic: DOCX with embedded images and < 200 chars of paragraph text → treat as image-based."""
-    if not HAS_DOCX:
-        return False
-    try:
-        document = _docx.Document(str(path))
-        text_chars = sum(len(p.text) for p in document.paragraphs)
-        image_count = sum(
-            1 for rel in document.part.rels.values()
-            if "image" in rel.reltype.lower()
-        )
-        return image_count > 0 and text_chars < 200
-    except Exception:
-        return False
-
-
-def _docx_image_ext(content_type: str) -> str:
-    """Map a DOCX image content-type string to a file extension."""
-    ct = (content_type or "").lower()
-    if "png" in ct:
-        return ".png"
-    if "jpeg" in ct or "jpg" in ct:
-        return ".jpg"
-    if "gif" in ct:
-        return ".gif"
-    if "bmp" in ct:
-        return ".bmp"
-    if "tiff" in ct:
-        return ".tiff"
-    if "webp" in ct:
-        return ".webp"
-    return ".png"
-
-
-def extract_docx_ocr(
-    path: Path,
-    log,
-    glm_native_out_dir: Optional[Path] = None,
-    ocr_images_dir: Optional[Path] = None,
-) -> List[List[Dict]]:
-    """OCR all embedded images in a DOCX with glmocr, producing the same output as extract_pdf_ocr."""
-    if not HAS_DOCX:
-        log("  WARNING: python-docx not installed – cannot open DOCX for image OCR.")
-        return []
-
-    try:
-        document = _docx.Document(str(path))
-    except Exception as e:
-        log(f"  ERROR opening DOCX: {e}")
-        return []
-
-    # Collect (bytes, ext) for every unique image relationship in the document.
-    images: List[Tuple[bytes, str]] = []
-    seen_rids: set = set()
-    for rid, rel in document.part.rels.items():
-        if "image" not in rel.reltype.lower():
-            continue
-        if rid in seen_rids:
-            continue
-        seen_rids.add(rid)
-        try:
-            part = rel.target_part
-            blob = part.blob
-            if not blob:
-                continue
-            ext = _docx_image_ext(getattr(part, "content_type", ""))
-            images.append((blob, ext))
-        except Exception:
-            continue
-
-    if not images:
-        log("  No embedded images found in DOCX; falling back to text extraction.")
-        return extract_docx(path, log)
-
-    if not HAS_GLMOCR:
-        log("  WARNING: glmocr not installed – falling back to DOCX text extraction.")
-        return extract_docx(path, log)
-
-    # Save source images so they are accessible in the output images folder.
-    src_img_names: List[str] = []
-    if ocr_images_dir is not None:
-        ocr_images_dir.mkdir(parents=True, exist_ok=True)
-        for idx, (blob, ext) in enumerate(images):
-            src_name = f"{path.stem}_img_{idx + 1:03d}{ext}"
-            try:
-                (ocr_images_dir / src_name).write_bytes(blob)
-                src_img_names.append(src_name)
-            except Exception as e:
-                log(f"  Warning: could not save source image {src_name}: {e}")
-                src_img_names.append("")
-    else:
-        src_img_names = [""] * len(images)
-
-    log(f"  Found {len(images)} embedded image(s) in DOCX – running GLM OCR on each...")
-    all_pages: List[List[Dict]] = []
-
-    try:
-        with _create_glmocr_parser(log) as parser:
-            for img_idx, (img_bytes, img_ext) in enumerate(images):
-                log(f"  OCR image {img_idx + 1}/{len(images)}...")
-                try:
-                    results = parser.parse(_to_rgb_bytes(img_bytes), save_layout_visualization=False)
-
-                    # Persist full GLM artifacts for the first image only (avoid dir clutter).
-                    per_img_glm_dir = None
-                    if glm_native_out_dir is not None:
-                        per_img_glm_dir = glm_native_out_dir / f"img{img_idx + 1:03d}"
-                        _preserve_glm_default_output(results, per_img_glm_dir, log, f"{path.name}[img{img_idx+1}]")
-
-                    # Collect figure crops into ocr_images_dir.
-                    mapping = _collect_glm_figure_images(
-                        results,
-                        per_img_glm_dir,
-                        ocr_images_dir,
-                        f"{path.stem}_fig{img_idx + 1:03d}_",
-                        log,
-                    )
-
-                    raw_obj: Any = None
-                    if hasattr(results, "to_json"):
-                        try:
-                            raw_obj = results.to_json()
-                        except Exception:
-                            raw_obj = None
-                    if raw_obj is None and hasattr(results, "pages"):
-                        raw_obj = results.pages
-                    if raw_obj is None and hasattr(results, "json_result"):
-                        raw_obj = getattr(results, "json_result")
-
-                    img_pages = _normalize_glm_pages(
-                        raw_obj, log, f"{path.name}[img{img_idx + 1}]"
-                    )
-                    if img_pages:
-                        _apply_image_path_remap(img_pages, mapping)
-                        page_offset = len(all_pages)
-                        src_name = src_img_names[img_idx] if img_idx < len(src_img_names) else ""
-                        for pg_idx, pg in enumerate(img_pages):
-                            for el in pg:
-                                el["page_no"] = page_offset + pg_idx
-                                # If GLM left no image_path on a figure element, point to the source image.
-                                if el.get("native_label") == "figure" and not el.get("image_path") and src_name:
-                                    el["image_path"] = src_name
-                        # PIL-based crop: extract sub-regions within this source image.
-                        _crop_and_save_figure_regions(
-                            img_bytes,
-                            img_pages,
-                            ocr_images_dir,
-                            f"{path.stem}_img{img_idx + 1:03d}_fig_",
-                            log,
-                        )
-                        all_pages.extend(img_pages)
-                except Exception as e:
-                    log(f"  GLM OCR failed for image {img_idx + 1}: {e}")
-    except Exception as e:
-        log(f"  glmocr pipeline error during DOCX image OCR: {e}")
-
-    if all_pages:
-        log(f"  DOCX image OCR complete: {len(all_pages)} page(s) from {len(images)} image(s).")
-        return all_pages
-
-    log("  GLM OCR returned no results for DOCX images; falling back to text extraction.")
-    return extract_docx(path, log)
 
 
 def extract_docx(path: Path, log, docx_media_dir: Optional[Path] = None) -> List[List[Dict]]:
@@ -2198,12 +1642,7 @@ def extract_txt(path: Path, log) -> List[List[Dict]]:
     return _chunk_pages(elements)
 
 
-def extract_image(
-    path: Path,
-    log,
-    glm_native_out_dir: Optional[Path] = None,
-    ocr_images_dir: Optional[Path] = None,
-) -> List[List[Dict]]:
+def extract_image(path: Path, log, glm_native_out_dir: Optional[Path] = None) -> List[List[Dict]]:
     """OCR a single raster image with glmocr."""
     if not HAS_GLMOCR:
         log("  WARNING: glmocr not installed – cannot OCR image.")
@@ -2213,12 +1652,9 @@ def extract_image(
     try:
         with _create_glmocr_parser(log) as parser:
             img_bytes = path.read_bytes()
-            results = parser.parse(_to_rgb_bytes(img_bytes), save_layout_visualization=False)
+            results = parser.parse(img_bytes, save_layout_visualization=False)
 
         _preserve_glm_default_output(results, glm_native_out_dir, log, path.name)
-        mapping = _collect_glm_figure_images(
-            results, glm_native_out_dir, ocr_images_dir, f"{path.stem}_fig_", log
-        )
 
         raw_obj: Any = None
         if hasattr(results, "to_json"):
@@ -2231,18 +1667,58 @@ def extract_image(
 
         pages = _normalize_glm_pages(raw_obj, log, path.name)
         if pages:
-            _apply_image_path_remap(pages, mapping)
-            # PIL-based fallback: crop figure regions directly from the source image
-            # for any figure element that still has no image_path after the GLM save scan.
-            _crop_and_save_figure_regions(
-                img_bytes, pages, ocr_images_dir, f"{path.stem}_fig_", log
-            )
             return pages
 
         log("  GLM OCR image parse returned no parseable pages.")
     except Exception as e:
         log(f"  glmocr image error: {e}")
     return [[_el(f"[Image: {path.name}]", "figure", 0)]]
+
+
+_MD_FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
+_FENCE_BLOCK_RE = re.compile(r"```[\w+-]*[ \t]*\n(.*?)\n?[ \t]*```", re.DOTALL)
+
+
+def _strip_md_fences(text: str) -> str:
+    """Clean ```markdown fences the OCR model sometimes emits.
+
+    Handles: (1) the whole output wrapped in one fence, (2) plain text
+    followed by a fenced duplicate of the same text, (3) stray unpaired
+    fence-marker lines. Legitimate paired, non-duplicate code blocks are
+    preserved.
+    """
+    if not text or "```" not in text:
+        return text
+    s = text.strip()
+
+    m = _MD_FENCE_RE.match(s)
+    if m:
+        s = m.group(1).strip()
+        if "```" not in s:
+            return s
+
+    # Drop fenced blocks whose content already appears outside the fence
+    # (model echoing the same text twice).
+    for blk in list(_FENCE_BLOCK_RE.finditer(s)):
+        inner = blk.group(1).strip()
+        outside = s[:blk.start()] + s[blk.end():]
+        if not inner or inner in outside:
+            s = s.replace(blk.group(0), "", 1)
+
+    if "```" not in s:
+        return s.strip()
+
+    # Remove bare fence-marker lines that are not part of a paired block.
+    spans = [b.span() for b in _FENCE_BLOCK_RE.finditer(s)]
+    out_lines = []
+    pos = 0
+    for ln in s.splitlines(keepends=True):
+        start = pos
+        pos += len(ln)
+        if ln.strip().startswith("```") and not any(a <= start < b for a, b in spans):
+            continue
+        out_lines.append(ln)
+    return "".join(out_lines).strip()
 
 
 def _normalize_glm_pages(raw_obj: Any, log, source_name: str) -> List[List[Dict]]:
@@ -2348,52 +1824,6 @@ def _normalize_glm_pages(raw_obj: Any, log, source_name: str) -> List[List[Dict]
     return []
 
 
-_MD_FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
-_FENCE_BLOCK_RE = re.compile(r"```[\w+-]*[ \t]*\n(.*?)\n?[ \t]*```", re.DOTALL)
-
-
-def _strip_md_fences(text: str) -> str:
-    """Clean ```markdown fences the OCR model sometimes emits.
-
-    Handles: (1) the whole output wrapped in one fence, (2) plain text
-    followed by a fenced duplicate of the same text, (3) stray unpaired
-    fence-marker lines. Legitimate paired, non-duplicate code blocks are
-    preserved.
-    """
-    if not text or "```" not in text:
-        return text
-    s = text.strip()
-
-    m = _MD_FENCE_RE.match(s)
-    if m:
-        s = m.group(1).strip()
-        if "```" not in s:
-            return s
-
-    # Drop fenced blocks whose content already appears outside the fence
-    # (model echoing the same text twice).
-    for blk in list(_FENCE_BLOCK_RE.finditer(s)):
-        inner = blk.group(1).strip()
-        outside = s[:blk.start()] + s[blk.end():]
-        if not inner or inner in outside:
-            s = s.replace(blk.group(0), "", 1)
-
-    if "```" not in s:
-        return s.strip()
-
-    # Remove bare fence-marker lines that are not part of a paired block.
-    spans = [b.span() for b in _FENCE_BLOCK_RE.finditer(s)]
-    out_lines = []
-    pos = 0
-    for ln in s.splitlines(keepends=True):
-        start = pos
-        pos += len(ln)
-        if ln.strip().startswith("```") and not any(a <= start < b for a, b in spans):
-            continue
-        out_lines.append(ln)
-    return "".join(out_lines).strip()
-
-
 def _preserve_glm_default_output(results: Any, out_dir: Optional[Path], log, source_name: str) -> None:
     """Persist native GLM output artifacts (json/md/imgs/layout_vis) if supported."""
     if out_dir is None:
@@ -2402,182 +1832,21 @@ def _preserve_glm_default_output(results: Any, out_dir: Optional[Path], log, sou
         out_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(results, "save"):
             results.save(output_dir=str(out_dir))
-            _clean_saved_md_fences(out_dir)
+            # The OCR model sometimes wraps content in ```markdown fences —
+            # clean every saved .md in place.
+            for md_file in out_dir.rglob("*.md"):
+                try:
+                    raw = md_file.read_text(encoding="utf-8", errors="replace")
+                    cleaned = _strip_md_fences(raw)
+                    if cleaned != raw:
+                        md_file.write_text(cleaned + "\n", encoding="utf-8")
+                except Exception:
+                    pass
             log(f"  Preserved native GLM output at: {out_dir}")
         else:
             log(f"  GLM result object has no save() method for {source_name}; skipping native output export.")
     except Exception as e:
         log(f"  Could not preserve native GLM output for {source_name}: {e}")
-
-
-def _clean_saved_md_fences(out_dir: Path) -> None:
-    """Strip ```markdown fences from every .md file saved under out_dir."""
-    for md_file in out_dir.rglob("*.md"):
-        try:
-            raw = md_file.read_text(encoding="utf-8", errors="replace")
-            cleaned = _strip_md_fences(raw)
-            if cleaned != raw:
-                md_file.write_text(cleaned + "\n", encoding="utf-8")
-        except Exception:
-            pass
-
-
-_IMG_COPY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp", ".gif"})
-
-
-def _collect_glm_figure_images(
-    results: Any,
-    glm_save_dir: Optional[Path],
-    images_dir: Optional[Path],
-    prefix: str,
-    log,
-) -> Dict[str, str]:
-    """Copy figure/image files produced by GLM OCR into images_dir.
-
-    If glm_save_dir already exists (populated by _preserve_glm_default_output),
-    images are sourced from there.  Otherwise results.save() is called into a
-    temporary directory and image files are pulled from that.
-
-    Returns {original_basename_or_abs_path → saved_filename} for image_path updates.
-    """
-    if images_dir is None:
-        return {}
-
-    src_dir: Optional[Path] = None
-    tmp_dir_obj = None
-
-    if glm_save_dir is not None and glm_save_dir.is_dir():
-        src_dir = glm_save_dir
-    elif hasattr(results, "save"):
-        tmp_dir_obj = tempfile.TemporaryDirectory(prefix="glm_fig_")
-        src_dir = Path(tmp_dir_obj.name)
-        try:
-            results.save(output_dir=str(src_dir))
-        except Exception as e:
-            log(f"  Warning: GLM save for figure extraction failed: {e}")
-            src_dir = None
-
-    mapping: Dict[str, str] = {}
-    if src_dir and src_dir.is_dir():
-        try:
-            images_dir.mkdir(parents=True, exist_ok=True)
-            count = 0
-            for f in sorted(src_dir.rglob("*")):
-                if not f.is_file() or f.suffix.lower() not in _IMG_COPY_EXTS:
-                    continue
-                dst_name = f"{prefix}{f.name}"
-                dst_path = images_dir / dst_name
-                n = 1
-                while dst_path.exists():
-                    dst_name = f"{prefix}{f.stem}_{n}{f.suffix}"
-                    dst_path = images_dir / dst_name
-                    n += 1
-                shutil.copy2(str(f), str(dst_path))
-                mapping[f.name] = dst_name
-                mapping[str(f)] = str(dst_path)
-                count += 1
-            if count:
-                log(f"  Saved {count} figure image(s) to: {images_dir}")
-        except Exception as e:
-            log(f"  Warning: could not copy GLM figure images: {e}")
-
-    if tmp_dir_obj is not None:
-        try:
-            tmp_dir_obj.cleanup()
-        except Exception:
-            pass
-
-    return mapping
-
-
-def _apply_image_path_remap(pages: List[List[Dict]], mapping: Dict[str, str]) -> None:
-    """Rewrite image_path in every element using the provided old→new mapping."""
-    if not mapping:
-        return
-    for page in pages:
-        for el in page:
-            ip = el.get("image_path")
-            if not ip:
-                continue
-            new = mapping.get(ip) or mapping.get(Path(ip).name)
-            if new:
-                el["image_path"] = new
-
-
-_FIGURE_LABELS = {"figure", "image", "picture", "photo"}
-
-
-def _crop_and_save_figure_regions(
-    src_img_bytes: bytes,
-    pages: List[List[Dict]],
-    images_dir: Optional[Path],
-    prefix: str,
-    log,
-) -> None:
-    """Crop figure blocks from src_img_bytes using bbox_2d and save to images_dir.
-
-    Updates image_path in each element in-place.  Only processes elements where
-    native_label is a figure variant AND image_path is not already set (so it
-    complements, not replaces, the GLM-save path collected earlier).
-    Requires Pillow; silently skips if not installed.
-    """
-    if images_dir is None or not HAS_PIL or not src_img_bytes:
-        return
-    try:
-        src = _PILImage.open(_pil_io.BytesIO(src_img_bytes)).convert("RGB")
-        w, h = src.size
-        images_dir.mkdir(parents=True, exist_ok=True)
-        count = 0
-        for pg_idx, page in enumerate(pages):
-            for el_idx, el in enumerate(page):
-                nl = (el.get("native_label") or "").lower()
-                if nl not in _FIGURE_LABELS:
-                    continue
-                # Skip elements that already got an image_path from GLM save artifacts.
-                if el.get("image_path"):
-                    continue
-                bbox = el.get("bbox_2d")
-                if not bbox or len(bbox) < 4:
-                    continue
-                try:
-                    x0, y0, x1, y1 = (float(v) for v in bbox[:4])
-                    x0, y0 = max(0.0, x0), max(0.0, y0)
-                    x1, y1 = min(float(w), x1), min(float(h), y1)
-                    if x1 <= x0 or y1 <= y0:
-                        continue
-                    crop = src.crop((int(x0), int(y0), int(x1), int(y1)))
-                    count += 1
-                    fname = f"{prefix}{count:03d}.png"
-                    crop.save(str(images_dir / fname), format="PNG")
-                    el["image_path"] = fname
-                except Exception:
-                    continue
-        if count:
-            log(f"  Cropped and saved {count} figure region(s) to: {images_dir}")
-    except Exception as e:
-        log(f"  Warning: PIL figure crop failed (install Pillow for image extraction): {e}")
-
-
-def _to_rgb_bytes(img_bytes: bytes) -> bytes:
-    """Convert image bytes to RGB PNG so GLM OCR can save JPEG crops internally.
-
-    JPEG does not support alpha channels; if the source image is RGBA, LA, or
-    palette mode the glmocr library raises "cannot write mode RGBA as JPEG".
-    Converting to RGB before passing to the parser avoids this.
-    Returns the original bytes unchanged if PIL is unavailable or conversion fails.
-    """
-    if not HAS_PIL or not img_bytes:
-        return img_bytes
-    try:
-        img = _PILImage.open(_pil_io.BytesIO(img_bytes))
-        if img.mode not in ("RGBA", "LA", "P", "PA"):
-            return img_bytes
-        rgb = img.convert("RGB")
-        buf = _pil_io.BytesIO()
-        rgb.save(buf, format="PNG")
-        return buf.getvalue()
-    except Exception:
-        return img_bytes
 
 
 def _extract_via_pandoc_plain(path: Path, log) -> List[List[Dict]]:
@@ -2604,7 +1873,6 @@ def extract_file(
     force_ocr: bool = False,
     glm_native_out_dir: Optional[Path] = None,
     docx_media_dir: Optional[Path] = None,
-    ocr_images_dir: Optional[Path] = None,
 ) -> List[List[Dict]]:
     """
     Route *path* to the right extractor.
@@ -2616,25 +1884,22 @@ def extract_file(
     if ext == ".pdf":
         if force_ocr or _is_scanned_pdf(path):
             log("  → scanned/image PDF → glmocr")
-            return extract_pdf_ocr(path, log, glm_native_out_dir, ocr_images_dir)
+            return extract_pdf_ocr(path, log, glm_native_out_dir)
         else:
             if HAS_OPENDATALOADER_PDF:
                 log("  → text-layer PDF → opendataloader-pdf")
-                pages = extract_pdf_opendataloader(path, log, ocr_images_dir)
+                pages = extract_pdf_opendataloader(path, log)
                 if pages:
                     return pages
                 log("  opendataloader-pdf returned no parseable content; falling back to pymupdf.")
             log("  → text-layer PDF → pymupdf")
             return extract_pdf_text(path, log)
     elif ext == ".docx":
-        if force_ocr or _is_image_heavy_docx(path):
-            log("  → image-based/force-OCR DOCX → glmocr")
-            return extract_docx_ocr(path, log, glm_native_out_dir, ocr_images_dir)
         return extract_docx(path, log, docx_media_dir)
     elif ext in TEXT_EXTS | MD_EXTS:
         return extract_txt(path, log)
     elif ext in IMAGE_EXTS:
-        return extract_image(path, log, glm_native_out_dir, ocr_images_dir)
+        return extract_image(path, log, glm_native_out_dir)
     else:
         log(f"  Unsupported extension '{ext}' – trying plain text.")
         return extract_txt(path, log)
@@ -3940,7 +3205,7 @@ def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
                 if table_block:
                     lines.append(table_block + "\n")
             elif nl == "figure":
-                img = _adoc_image_ref(el.get("image_path", ""))
+                img = el.get("image_path", "")
                 lines.append(f"image::{img}[]\n")
             elif nl == "link":
                 uri = (el.get("uri") or "").strip()
@@ -3983,20 +3248,6 @@ def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
     return "\n".join(lines)
 
 
-def _adoc_image_ref(img: str) -> str:
-    """Figure images are saved to 04_adoc/images/; reference bare filenames there."""
-    if not img or "/" in img or "\\" in img or ":" in img:
-        return img
-    return f"images/{img}"
-
-
-def _md_image_ref(img: str) -> str:
-    """Markdown lives in 05_markdown/; images sit in ../04_adoc/images/."""
-    if not img or "/" in img or "\\" in img or ":" in img:
-        return img
-    return f"../04_adoc/images/{img}"
-
-
 def elements_to_adoc_body(pages: List[List[Dict]]) -> str:
     """Generate body-only AsciiDoc (without dynamic header attributes)."""
     lines: List[str] = []
@@ -4021,7 +3272,7 @@ def elements_to_adoc_body(pages: List[List[Dict]]) -> str:
                 if table_block:
                     lines.append(table_block + "\n")
             elif nl == "figure":
-                img = _adoc_image_ref(el.get("image_path", ""))
+                img = el.get("image_path", "")
                 lines.append(f"image::{img}[]\n")
             elif nl == "link":
                 uri = (el.get("uri") or "").strip()
@@ -4085,7 +3336,7 @@ def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
                     lines.extend(md_block.rstrip("\n").splitlines())
                 lines.append("")
             elif nl == "figure":
-                img = _md_image_ref(el.get("image_path", ""))
+                img = el.get("image_path", "")
                 lines.append(f"![image]({img})")
                 lines.append("")
             elif nl == "link":
@@ -4228,11 +3479,10 @@ def export_assets(src_path: Path, pages: List[List[Dict]], out_root: Path, log) 
                 raw_vis = raw_page.get_pixmap(matrix=_fitz.Matrix(2, 2), alpha=False)
                 raw_vis.save(str(raw_vis_dir / base))
                 raw_doc.close()
-            n_exported = len(doc)
             doc.close()
-            log(f"  → {imgs_dir} ({n_exported} image(s))")
-            log(f"  → {vis_dir} ({n_exported} visualization(s))")
-            log(f"  → {raw_vis_dir} ({n_exported} raw visualization(s))")
+            log(f"  → {imgs_dir} ({len(doc)} image(s))")
+            log(f"  → {vis_dir} ({len(doc)} visualization(s))")
+            log(f"  → {raw_vis_dir} ({len(doc)} raw visualization(s))")
             return
         except Exception as e:
             log(f"  Asset export failed for PDF rendering: {e}")
@@ -4703,17 +3953,9 @@ def _ollama_structure_template(
     if not template_text.strip() or not body_adoc.strip():
         return None
 
-    # Skip LLM pass for large documents — sending 100K+ chars would take hours
-    # and the deterministic fill already handled the structure above.
-    _OLLAMA_TEMPLATE_CHAR_LIMIT = 8000
-    if len(body_adoc) > _OLLAMA_TEMPLATE_CHAR_LIMIT:
-        return None
-
     try:
         import requests
 
-        tmpl_snippet = template_text[:4000]
-        body_snippet = body_adoc[:_OLLAMA_TEMPLATE_CHAR_LIMIT]
         prompt = (
             "You are an S1000D AsciiDoc formatter.\n"
             "Task: merge BODY content into TEMPLATE structure.\n"
@@ -4726,10 +3968,10 @@ def _ollama_structure_template(
             f"DM Type: {dm_type}\n"
             f"Title: {title}\n\n"
             "=== TEMPLATE START ===\n"
-            f"{tmpl_snippet}\n"
+            f"{template_text[:120000]}\n"
             "=== TEMPLATE END ===\n\n"
             "=== BODY START ===\n"
-            f"{body_snippet}\n"
+            f"{body_adoc[:120000]}\n"
             "=== BODY END ===\n"
         )
 
@@ -4740,14 +3982,13 @@ def _ollama_structure_template(
         else:
             root = base.rstrip("/")
 
-        _opts = {"temperature": 0, "top_p": 0.9, "num_predict": 4096}
         endpoints.append((
             base,
             {
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": _opts,
+                "options": {"temperature": 0, "top_p": 0.9},
             },
             "generate",
         ))
@@ -4759,7 +4000,7 @@ def _ollama_structure_template(
                     {"role": "user", "content": prompt}
                 ],
                 "stream": False,
-                "options": _opts,
+                "options": {"temperature": 0, "top_p": 0.9},
             },
             "chat",
         ))
@@ -4768,7 +4009,7 @@ def _ollama_structure_template(
         last_err = None
         for url, payload, mode in endpoints:
             try:
-                resp = requests.post(url, json=payload, timeout=(10, 60))
+                resp = requests.post(url, json=payload, timeout=90)
                 resp.raise_for_status()
                 data = resp.json()
                 if mode == "generate":
@@ -5083,8 +4324,6 @@ def build_package(
     force_ocr: bool,
     out_formats: Dict[str, bool],  # raw_json, sem_json, xml, adoc, md, assets, glm_default
     log,
-    stop_event=None,       # threading.Event – checked between major steps
-    progress_cb=None,      # callable(step:int, total:int, name:str)
 ):
     """
     Full conversion pipeline for one file.
@@ -5097,36 +4336,18 @@ def build_package(
     stem = src_path.stem
     ext  = src_path.suffix.lower()
 
-    def _prog(step: int, name: str):
-        if progress_cb:
-            try:
-                progress_cb(step, 4, name)
-            except Exception:
-                pass
-
-    def _stopped() -> bool:
-        return stop_event is not None and stop_event.is_set()
-
     # ── Step 1 : Extract ──────────────────────────────────────────────────
-    _prog(1, "Extracting content")
     log(f"\n{'─'*60}")
     log(f"[1/4] Extracting: {src_path.name}")
     glm_native_out_dir = None
     docx_media_dir = None
-    ocr_images_dir = None
     if out_formats.get("glm_default"):
         glm_native_out_dir = out_root / "00_glm_default" / src_path.stem
     if ext == ".docx":
-        # Extracted DOCX images live in 04_adoc/images/, referenced as image::images/…
-        docx_media_dir = out_root / "04_adoc" / "images"
-    # For any OCR path (scanned PDF, standalone image, or image-heavy/force-OCR DOCX),
-    # save figure crops under 04_adoc/images/ so image::images/… macros resolve.
-    if ext in IMAGE_EXTS or (ext == ".pdf" and (force_ocr or _is_scanned_pdf(src_path))) or (
-        ext == ".docx" and (force_ocr or _is_image_heavy_docx(src_path))
-    ):
-        ocr_images_dir = out_root / "04_adoc" / "images"
+        # Keep extracted DOCX images next to generated ADOC for stable image:: paths.
+        docx_media_dir = out_root / "04_adoc"
 
-    pages = extract_file(src_path, log, force_ocr, glm_native_out_dir, docx_media_dir, ocr_images_dir)
+    pages = extract_file(src_path, log, force_ocr, glm_native_out_dir, docx_media_dir)
     if not pages:
         log("  ERROR: No content extracted. Skipping file.")
         return False
@@ -5151,12 +4372,7 @@ def build_package(
         f"DM type: {effective_dm_type} | Title: {title[:60]}"
     )
 
-    if _stopped():
-        log("  ⏹ Conversion stopped.")
-        return False
-
     # ── Step 2 : Raw JSON ─────────────────────────────────────────────────
-    _prog(2, "Writing JSON")
     if out_formats.get("raw_json"):
         log(f"[2/4] Writing raw JSON...")
         raw_dir = out_root / "01_raw_json"
@@ -5166,12 +4382,7 @@ def build_package(
                             encoding="utf-8")
         log(f"  → {raw_path}")
 
-    if _stopped():
-        log("  ⏹ Conversion stopped.")
-        return False
-
     # ── Step 3 : Semantic JSON ────────────────────────────────────────────
-    _prog(3, "Semantic annotation")
     log(f"[3/4] Semantic annotation...")
     sem_pages = annotate_pages(pages)
     structured_sem = build_structured_semantic(sem_pages)
@@ -5188,10 +4399,6 @@ def build_package(
                             encoding="utf-8")
         log(f"  → {sem_path}")
 
-    if _stopped():
-        log("  ⏹ Conversion stopped.")
-        return False
-
     # Flatten all elements for stats
     total_els = sum(len(p) for p in sem_pages)
     n_proced  = sum(1 for p in sem_pages for el in p
@@ -5204,7 +4411,6 @@ def build_package(
         log(f"  Split into {len(modules)} DMC modules using heading structure.")
 
     # ── Step 4a : S1000D XML ──────────────────────────────────────────────
-    _prog(4, "Generating outputs")
     if out_formats.get("xml"):
         log(f"[4a/4] Generating S1000D XML ({effective_dm_type})...")
         xml_dir = out_root / "03_s1000d_xml"
@@ -5316,246 +4522,179 @@ ACCEPT_EXTS = (
     ("All files",      "*.*"),
 )
 
-_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
 
 class ConverterSuiteApp(tk.Tk):
-    # ── Palette ──────────────────────────────────────────────────────────────
-    BG      = "#EEF2FF"   # lavender-50
-    CARD    = "#FFFFFF"
-    IND     = "#4F46E5"   # indigo-600  (primary)
-    IND_H   = "#4338CA"   # hover
-    GRN     = "#16A34A"   # green-600   (Go)
-    GRN_H   = "#15803D"
-    RED     = "#DC2626"   # red-600     (Stop / error)
-    RED_H   = "#B91C1C"
-    AMB     = "#D97706"   # amber-600   (warning)
-    TEXT    = "#1E1B4B"   # deep indigo
-    MUTE    = "#6B7280"   # grey-500
-    BDR     = "#C7D2FE"   # indigo-200
-    LOG_BG  = "#0F172A"   # slate-900
-    LOG_DEF = "#94A3B8"   # slate-400
-    LOG_STEP= "#38BDF8"   # sky-400
-    LOG_OK  = "#4ADE80"   # green-400
-    LOG_ERR = "#F87171"   # red-400
-    LOG_WARN= "#FBBF24"   # amber-400
-    LOG_ARR = "#A78BFA"   # violet-400
-    LOG_SEP = "#334155"   # slate-700
-    LOG_FILE= "#7DD3FC"   # sky-300
-
     def __init__(self):
         super().__init__()
         self.title("S1000D Converter Suite")
-        self.geometry("1020x860")
-        self.configure(bg=self.BG)
+        self.geometry("960x780")
+        self.configure(bg="#E6E6FA")
         self.resizable(True, True)
-        self.minsize(780, 620)
 
-        # ── Runtime state ────────────────────────────────────────────────
-        self.file_list: List[Path] = []
-        self._stop_event  = threading.Event()
-        self._spinner_idx = 0
-        self._spinner_job = None
-        self._running     = False
-        self._t0          = 0.0
-        self._elapsed_job = None
-
-        # ── Tkinter variables ─────────────────────────────────────────────
-        self.output_dir            = tk.StringVar()
-        self.dm_type               = tk.StringVar(value="auto")
-        self.force_ocr             = tk.BooleanVar(value=False)
-        self.out_raw               = tk.BooleanVar(value=True)
-        self.out_sem               = tk.BooleanVar(value=True)
-        self.out_xml               = tk.BooleanVar(value=True)
-        self.out_adoc              = tk.BooleanVar(value=True)
-        self.out_md                = tk.BooleanVar(value=True)
-        self.out_assets            = tk.BooleanVar(value=True)
-        self.out_glm_default       = tk.BooleanVar(value=True)
-        self.use_ollama_template   = tk.BooleanVar(value=USE_OLLAMA_TEMPLATE)
-        self.ollama_model_var      = tk.StringVar(value=OLLAMA_MODEL)
-        self.glmocr_backend_var    = tk.StringVar(value=GLMOCR_BACKEND)
+        # State
+        self.file_list:  List[Path] = []
+        self.output_dir  = tk.StringVar()
+        self.dm_type     = tk.StringVar(value="auto")
+        self.force_ocr   = tk.BooleanVar(value=False)
+        self.out_raw     = tk.BooleanVar(value=True)
+        self.out_sem     = tk.BooleanVar(value=True)
+        self.out_xml     = tk.BooleanVar(value=True)
+        self.out_adoc    = tk.BooleanVar(value=True)
+        self.out_md      = tk.BooleanVar(value=True)
+        self.out_assets  = tk.BooleanVar(value=True)
+        self.out_glm_default = tk.BooleanVar(value=True)
+        self.use_ollama_template = tk.BooleanVar(value=USE_OLLAMA_TEMPLATE)
+        self.ollama_model_var = tk.StringVar(value=OLLAMA_MODEL)
+        self.glmocr_backend_var = tk.StringVar(value=GLMOCR_BACKEND)
         self.glmocr_ollama_url_var = tk.StringVar(value=GLMOCR_OLLAMA_URL)
         self.glmocr_ollama_model_var = tk.StringVar(value=GLMOCR_OLLAMA_MODEL)
-        self.odl_use_hybrid_var    = tk.BooleanVar(value=ODL_USE_HYBRID)
-        self.odl_hybrid_url_var    = tk.StringVar(value=ODL_HYBRID_URL)
-        self.dm_desc_var           = tk.StringVar(value=DM_TYPE_DESC["auto"])
-        self._progress_var         = tk.DoubleVar(value=0.0)
-        self._status_var           = tk.StringVar(value="")
-        self._stats_var            = tk.StringVar(value="")
+        self.dm_desc_var = tk.StringVar(value=DM_TYPE_DESC["auto"])
 
-        self._build_styles()
-        self._build_ui()
+        # Fonts / colours
+        hf   = tkfont.Font(family="Helvetica", size=13, weight="bold")
+        bf   = tkfont.Font(family="Helvetica", size=10, weight="bold")
+        lf   = tkfont.Font(family="Helvetica", size=10)
+        sf   = tkfont.Font(family="Helvetica", size=9,  slant="italic")
+        self.log_font  = tkfont.Font(family="Consolas", size=9)
+        BG   = "#E6E6FA"; FG = "#333333"; WH = "#FFFFFF"
+        BLUE = "#4682B4"; GRN = "#4CAF50"
 
-    # ── Styles ───────────────────────────────────────────────────────────────
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame",       background=BG)
+        style.configure("W.TFrame",     background=WH, relief="flat",
+                        borderwidth=1, bordercolor="#DDDDDD")
+        style.configure("TLabel",       background=BG, foreground=FG, font=lf)
+        style.configure("W.TLabel",     background=WH, foreground=FG, font=lf)
+        style.configure("TButton",      font=bf, background=BLUE,
+                        foreground=WH, padding=6, relief="flat")
+        style.map("TButton", background=[("active", "#5F9EA0")],
+                             foreground=[("active", WH)])
+        style.configure("Go.TButton",   font=hf, background=GRN,
+                        foreground=WH, padding=10, relief="flat")
+        style.map("Go.TButton", background=[("active", "#66BB6A")])
+        style.configure("TCheckbutton", background=WH, foreground=FG, font=lf)
+        style.configure("TMenubutton",  background=WH, foreground=FG,
+                        font=lf, padding=4)
 
-    def _build_styles(self):
-        st = ttk.Style()
-        st.theme_use("clam")
-        B, C, I, G, R, T, M = (self.BG, self.CARD, self.IND, self.GRN,
-                                self.RED, self.TEXT, self.MUTE)
-        UI = ("Segoe UI", 9)
-        UIB = ("Segoe UI", 9, "bold")
-
-        st.configure("TFrame",          background=B)
-        st.configure("Card.TFrame",     background=C, relief="flat")
-        st.configure("TLabel",          background=B,  foreground=T, font=UI)
-        st.configure("Card.TLabel",     background=C,  foreground=T, font=UI)
-        st.configure("Mute.TLabel",     background=C,  foreground=M, font=("Segoe UI", 8, "italic"))
-        st.configure("TCheckbutton",    background=C,  foreground=T, font=UI)
-        st.configure("TMenubutton",     background=C,  foreground=T, font=UI, padding=4)
-        st.configure("TEntry",          fieldbackground=C, foreground=T, font=UI)
-        st.configure("TLabelframe",     background=C,  bordercolor=self.BDR,
-                     relief="solid", borderwidth=1)
-        st.configure("TLabelframe.Label", background=C, foreground=I, font=UIB)
-
-        st.configure("TButton", font=UIB, background=I, foreground="#FFF",
-                     padding=(10, 6), relief="flat", borderwidth=0)
-        st.map("TButton",
-               background=[("active", self.IND_H), ("disabled", "#9CA3AF")],
-               foreground=[("disabled", "#D1D5DB")])
-
-        st.configure("Go.TButton",  font=("Segoe UI", 13, "bold"),
-                     background=G, foreground="#FFF", padding=(18, 10), relief="flat")
-        st.map("Go.TButton",
-               background=[("active", self.GRN_H), ("disabled", "#9CA3AF")])
-
-        st.configure("Stop.TButton", font=("Segoe UI", 13, "bold"),
-                     background=R, foreground="#FFF", padding=(18, 10), relief="flat")
-        st.map("Stop.TButton",
-               background=[("active", self.RED_H), ("disabled", "#9CA3AF")])
-
-        st.configure("Accent.Horizontal.TProgressbar",
-                     troughcolor="#E0E7FF", background=I,
-                     borderwidth=0, thickness=10)
-
-    # ── UI Construction ───────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        main = ttk.Frame(self, padding="14 10 14 10", style="TFrame")
+        main = ttk.Frame(self, padding="12 12 12 12", style="TFrame")
         main.pack(fill=tk.BOTH, expand=True)
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(5, weight=1)   # log row
+        main.rowconfigure(4, weight=1)   # log row expands
 
-        self._build_header(main)      # row 0
-        self._build_input(main)       # row 1
-        self._build_output(main)      # row 2
-        self._build_options(main)     # row 3
-        self._build_action(main)      # row 4
-        self._build_log(main)         # row 5
-
-    def _build_header(self, parent):
-        hdr = ttk.Frame(parent, style="TFrame")
-        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(hdr, text="S1000D Converter Suite",
-                 font=("Segoe UI", 17, "bold"),
-                 bg=self.BG, fg=self.IND).pack(side=tk.LEFT)
-        tk.Label(hdr, text="  PDF · DOCX · Images → XML · AsciiDoc · Markdown",
-                 font=("Segoe UI", 9), bg=self.BG, fg=self.MUTE
-                 ).pack(side=tk.LEFT, pady=(6, 0))
-
-    def _build_input(self, parent):
-        frm = ttk.LabelFrame(parent, text="Input Files", padding="8 6")
-        frm.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        frm.columnconfigure(0, weight=1)
+        # ── Row 0: Input files ────────────────────────────────────────────
+        inp_frame = ttk.LabelFrame(main, text="Input Files", padding="8 8",
+                                   style="W.TFrame")
+        inp_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        inp_frame.columnconfigure(0, weight=1)
 
         self.file_listbox = tk.Listbox(
-            frm, selectmode=tk.EXTENDED, height=5,
-            font=("Consolas", 9), bg=self.CARD, fg=self.TEXT,
-            selectbackground=self.IND, selectforeground="#FFF",
-            relief="flat", borderwidth=0, activestyle="none",
-            highlightthickness=1, highlightcolor=self.BDR,
-            highlightbackground=self.BDR,
+            inp_frame, selectmode=tk.EXTENDED, height=5,
+            font=self.log_font, bg=WH, fg=FG, relief="solid",
+            borderwidth=1, activestyle="dotbox",
         )
-        self.file_listbox.grid(row=0, column=0, columnspan=5,
-                               sticky="ew", pady=(0, 6))
+        self.file_listbox.grid(row=0, column=0, columnspan=4,
+                               sticky="ew", pady=(0, 4))
 
-        for col, (txt, cmd) in enumerate([
-            ("＋ Add Files",   self._add_files),
-            ("📁 Add Folder",  self._add_folder),
-            ("✕ Remove",       self._remove_selected),
-            ("⊘ Clear All",    self._clear_files),
-        ]):
-            ttk.Button(frm, text=txt, command=cmd).grid(
-                row=1, column=col, sticky="w", padx=(0, 6))
+        btn_add = ttk.Button(inp_frame, text="Add Files",
+                             command=self._add_files)
+        btn_add.grid(row=1, column=0, sticky="w", padx=(0, 4))
+        btn_add_dir = ttk.Button(inp_frame, text="Add Folder",
+                                 command=self._add_folder)
+        btn_add_dir.grid(row=1, column=1, sticky="w", padx=(0, 4))
+        btn_rem = ttk.Button(inp_frame, text="Remove Selected",
+                             command=self._remove_selected)
+        btn_rem.grid(row=1, column=2, sticky="w", padx=(0, 4))
+        btn_clr = ttk.Button(inp_frame, text="Clear All",
+                             command=self._clear_files)
+        btn_clr.grid(row=1, column=3, sticky="w")
 
-    def _build_output(self, parent):
-        frm = ttk.LabelFrame(parent, text="Output", padding="8 6")
-        frm.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        frm.columnconfigure(1, weight=1)
+        # ── Row 1: Output folder ──────────────────────────────────────────
+        out_frame = ttk.LabelFrame(main, text="Output", padding="8 8",
+                                   style="W.TFrame")
+        out_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        out_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Output Folder:", style="Card.TLabel"
+        ttk.Label(out_frame, text="Output Folder:",    style="W.TLabel"
                   ).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        tk.Label(frm, textvariable=self.output_dir, anchor="w",
-                 bg="#F5F3FF", fg=self.TEXT, relief="flat",
-                 font=("Segoe UI", 9), padx=6, pady=4,
-                 highlightthickness=1, highlightbackground=self.BDR,
-                 ).grid(row=0, column=1, sticky="ew")
-        ttk.Button(frm, text="Browse", command=self._pick_output
-                   ).grid(row=0, column=2, padx=(8, 0))
+        ttk.Label(out_frame, textvariable=self.output_dir,
+                  anchor="w", relief="solid", background=WH,
+                  borderwidth=1, padding=(4, 3)
+                  ).grid(row=0, column=1, sticky="ew")
+        ttk.Button(out_frame, text="Browse",
+                   command=self._pick_output).grid(
+            row=0, column=2, padx=(6, 0), sticky="e")
 
-    def _build_options(self, parent):
-        frm = ttk.LabelFrame(parent, text="Options", padding="8 6")
-        frm.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        frm.columnconfigure(1, weight=1)
-
-        sf = ("Segoe UI", 8, "italic")
+        # ── Row 2: Options ────────────────────────────────────────────────
+        opt_frame = ttk.LabelFrame(main, text="Options", padding="8 8",
+                                   style="W.TFrame")
+        opt_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        opt_frame.columnconfigure(1, weight=1)
 
         # DM type
-        ttk.Label(frm, text="DM Type:", style="Card.TLabel"
+        ttk.Label(opt_frame, text="DM Type:", style="W.TLabel"
                   ).grid(row=0, column=0, sticky="w", padx=(0, 8))
         dm_menu = ttk.OptionMenu(
-            frm, self.dm_type, "auto", *S1000D_DM_TYPES,
-            command=lambda v: self.dm_desc_var.set(DM_TYPE_DESC.get(v, "")))
+            opt_frame, self.dm_type, "auto", *S1000D_DM_TYPES,
+            command=lambda v: self.dm_desc_var.set(DM_TYPE_DESC.get(v, "")),
+            style="TMenubutton"
+        )
         dm_menu.config(width=26)
         dm_menu.grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Label(frm, textvariable=self.dm_desc_var,
-                  background=self.CARD, foreground=self.MUTE, font=sf
+        ttk.Label(opt_frame, textvariable=self.dm_desc_var,
+                  background=WH, foreground="#666", font=sf
                   ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
-        ttk.Checkbutton(frm, text="Force OCR  (glmocr)",
-                        variable=self.force_ocr
-                        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(frm, text="Use Ollama to structure AsciiDoc templates",
-                        variable=self.use_ollama_template
-                        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        # Force OCR
+        ttk.Checkbutton(opt_frame, text="Force OCR for PDFs (glmocr)",
+                        variable=self.force_ocr,
+                        style="TCheckbutton"
+                        ).grid(row=1, column=0, columnspan=2,
+                               sticky="w", pady=2)
 
-        # GLM backend
-        ttk.Label(frm, text="GLM OCR Backend:", style="Card.TLabel"
-                  ).grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(4, 2))
-        be_menu = ttk.OptionMenu(frm, self.glmocr_backend_var,
-                                 self.glmocr_backend_var.get(), "default", "ollama")
-        be_menu.config(width=14)
-        be_menu.grid(row=3, column=1, sticky="w", pady=(4, 2))
+        ttk.Checkbutton(opt_frame, text="Use Ollama to structure ADOC templates",
+                        variable=self.use_ollama_template,
+                        style="TCheckbutton"
+                        ).grid(row=2, column=0, columnspan=2,
+                               sticky="w", pady=2)
 
-        for r, (lbl, var, w) in enumerate([
-            ("Ollama Model:",           self.ollama_model_var,       28),
-            ("GLM OCR Ollama URL:",     self.glmocr_ollama_url_var,  42),
-            ("GLM OCR Ollama Model:",   self.glmocr_ollama_model_var, 42),
-        ], start=4):
-            ttk.Label(frm, text=lbl, style="Card.TLabel"
-                      ).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
-            ttk.Entry(frm, textvariable=var, width=w
-                      ).grid(row=r, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(opt_frame, text="GLM OCR Backend:", style="W.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(0, 8), pady=(2, 0)
+        )
+        backend_menu = ttk.OptionMenu(
+            opt_frame,
+            self.glmocr_backend_var,
+            self.glmocr_backend_var.get(),
+            "default",
+            "ollama",
+            style="TMenubutton",
+        )
+        backend_menu.config(width=26)
+        backend_menu.grid(row=3, column=1, sticky="w", pady=(2, 0))
 
-        # ── ODL Hybrid ────────────────────────────────────────────────────────
-        sep = ttk.Label(frm, text="── OpenDataLoader Fallback ──",
-                        background=self.CARD, foreground=self.MUTE,
-                        font=("Segoe UI", 8, "italic"))
-        sep.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        ttk.Label(opt_frame, text="Ollama Model:", style="W.TLabel").grid(
+            row=4, column=0, sticky="w", padx=(0, 8), pady=(2, 0)
+        )
+        model_entry = ttk.Entry(opt_frame, textvariable=self.ollama_model_var, width=28)
+        model_entry.grid(row=4, column=1, sticky="w", pady=(2, 0))
 
-        ttk.Checkbutton(frm, text="ODL Hybrid mode  (requires opendataloader-pdf-hybrid server)",
-                        variable=self.odl_use_hybrid_var
-                        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 2))
+        ttk.Label(opt_frame, text="GLM OCR Ollama URL:", style="W.TLabel").grid(
+            row=5, column=0, sticky="w", padx=(0, 8), pady=(2, 0)
+        )
+        ocr_url_entry = ttk.Entry(opt_frame, textvariable=self.glmocr_ollama_url_var, width=42)
+        ocr_url_entry.grid(row=5, column=1, columnspan=2, sticky="w", pady=(2, 0))
 
-        ttk.Label(frm, text="ODL Hybrid URL:", style="Card.TLabel"
-                  ).grid(row=9, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
-        ttk.Entry(frm, textvariable=self.odl_hybrid_url_var, width=42
-                  ).grid(row=9, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(opt_frame, text="GLM OCR Ollama Model:", style="W.TLabel").grid(
+            row=6, column=0, sticky="w", padx=(0, 8), pady=(2, 0)
+        )
+        ocr_model_entry = ttk.Entry(opt_frame, textvariable=self.glmocr_ollama_model_var, width=42)
+        ocr_model_entry.grid(row=6, column=1, columnspan=2, sticky="w", pady=(2, 0))
 
-        # Output format checkboxes
-        fmt = ttk.Frame(frm, style="Card.TFrame")
-        fmt.grid(row=10, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Label(fmt, text="Outputs:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        # Output formats
+        fmt_frame = ttk.Frame(opt_frame, style="W.TFrame")
+        fmt_frame.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(fmt_frame, text="Outputs:", style="W.TLabel"
+                  ).pack(side=tk.LEFT, padx=(0, 8))
         for txt, var in [
             ("Raw JSON",      self.out_raw),
             ("Semantic JSON", self.out_sem),
@@ -5565,93 +4704,56 @@ class ConverterSuiteApp(tk.Tk):
             ("Assets",        self.out_assets),
             ("GLM Default",   self.out_glm_default),
         ]:
-            ttk.Checkbutton(fmt, text=txt, variable=var).pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Checkbutton(fmt_frame, text=txt, variable=var,
+                            style="TCheckbutton").pack(side=tk.LEFT, padx=(0, 8))
 
-    def _build_action(self, parent):
-        frm = ttk.LabelFrame(parent, text="Conversion", padding="10 8")
-        frm.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        frm.columnconfigure(1, weight=1)
-
-        # ── Button row ──────────────────────────────────────────────────
-        btn_row = ttk.Frame(frm, style="Card.TFrame")
-        btn_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        btn_row.columnconfigure(2, weight=1)
-
+        # ── Row 3: Start button ───────────────────────────────────────────
         self.start_btn = ttk.Button(
-            btn_row, text="🚀  Convert All Files",
-            command=self._start_thread, style="Go.TButton")
-        self.start_btn.grid(row=0, column=0, padx=(0, 8))
+            main, text="🚀  Convert All Files",
+            command=self._start_thread, style="Go.TButton"
+        )
+        self.start_btn.grid(row=3, column=0, sticky="ew",
+                            pady=(0, 8), ipady=4)
 
-        self.stop_btn = ttk.Button(
-            btn_row, text="⏹  Stop",
-            command=self._stop_conversion, style="Stop.TButton",
-            state=tk.DISABLED)
-        self.stop_btn.grid(row=0, column=1)
-
-        self._stats_label = tk.Label(
-            btn_row, textvariable=self._stats_var,
-            bg=self.CARD, fg=self.MUTE, font=("Segoe UI", 9), anchor="e")
-        self._stats_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
-
-        # ── Progress bar ─────────────────────────────────────────────────
-        self.progress_bar = ttk.Progressbar(
-            frm, variable=self._progress_var,
-            maximum=100.0, mode="determinate",
-            style="Accent.Horizontal.TProgressbar")
-        self.progress_bar.grid(row=1, column=0, columnspan=2,
-                               sticky="ew", pady=(0, 4))
-
-        # ── Status line ──────────────────────────────────────────────────
-        self._status_label = tk.Label(
-            frm, textvariable=self._status_var,
-            bg=self.CARD, fg=self.IND, font=("Segoe UI", 9), anchor="w")
-        self._status_label.grid(row=2, column=0, columnspan=2, sticky="ew")
-
-    def _build_log(self, parent):
-        frm = ttk.LabelFrame(parent, text="Conversion Log", padding="4 4")
-        frm.grid(row=5, column=0, sticky="nsew")
-        frm.rowconfigure(0, weight=1)
-        frm.columnconfigure(0, weight=1)
+        # ── Row 4: Log ────────────────────────────────────────────────────
+        log_frame = ttk.LabelFrame(main, text="Log", padding="6 6",
+                                   style="W.TFrame")
+        log_frame.grid(row=4, column=0, sticky="nsew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
 
         self.log_widget = scrolledtext.ScrolledText(
-            frm, wrap=tk.WORD, font=("Consolas", 9),
-            state=tk.DISABLED,
-            bg=self.LOG_BG, fg=self.LOG_DEF,
-            insertbackground=self.LOG_DEF,
-            relief="flat", padx=8, pady=6,
+            log_frame, wrap=tk.WORD, font=self.log_font,
+            state=tk.DISABLED, bg="#f8f8f8", fg=FG,
+            relief="flat", padx=4, pady=4,
         )
         self.log_widget.grid(row=0, column=0, sticky="nsew")
 
-        # Color tags for log entries
-        self.log_widget.tag_configure("step",  foreground=self.LOG_STEP)
-        self.log_widget.tag_configure("ok",    foreground=self.LOG_OK)
-        self.log_widget.tag_configure("err",   foreground=self.LOG_ERR)
-        self.log_widget.tag_configure("warn",  foreground=self.LOG_WARN)
-        self.log_widget.tag_configure("arrow", foreground=self.LOG_ARR)
-        self.log_widget.tag_configure("sep",   foreground=self.LOG_SEP)
-        self.log_widget.tag_configure("file",  foreground=self.LOG_FILE)
 
-    # ── File management ───────────────────────────────────────────────────────
+    # ─── File management ──────────────────────────────────────────────────
 
     def _add_files(self):
-        for p in filedialog.askopenfilenames(filetypes=ACCEPT_EXTS):
+        paths = filedialog.askopenfilenames(filetypes=ACCEPT_EXTS)
+        for p in paths:
             fp = Path(p)
             if fp not in self.file_list:
                 self.file_list.append(fp)
-                self.file_listbox.insert(tk.END, f"  {fp.name}  ({fp.parent})")
+                self.file_listbox.insert(tk.END, str(fp))
 
     def _add_folder(self):
         folder = filedialog.askdirectory(title="Add all supported files from folder")
         if not folder:
             return
         for fp in Path(folder).rglob("*"):
-            if fp.suffix.lower() in ({".pdf", ".docx"} | TEXT_EXTS | MD_EXTS | IMAGE_EXTS
-                                     ) and fp not in self.file_list:
+            if fp.suffix.lower() in (
+                {".pdf", ".docx"} | TEXT_EXTS | MD_EXTS | IMAGE_EXTS
+            ) and fp not in self.file_list:
                 self.file_list.append(fp)
-                self.file_listbox.insert(tk.END, f"  {fp.name}  ({fp.parent})")
+                self.file_listbox.insert(tk.END, str(fp))
 
     def _remove_selected(self):
-        for idx in reversed(list(self.file_listbox.curselection())):
+        selected = list(self.file_listbox.curselection())
+        for idx in reversed(selected):
             self.file_listbox.delete(idx)
             self.file_list.pop(idx)
 
@@ -5664,104 +4766,18 @@ class ConverterSuiteApp(tk.Tk):
         if d:
             self.output_dir.set(d)
 
-    def _mark_file(self, idx: int, state: str):
-        """Color-code a listbox row: processing/ok/skip/error."""
-        colors = {
-            "processing": ("#FEF3C7", self.AMB),  # amber
-            "ok":         ("#DCFCE7", self.GRN),  # green
-            "skip":       ("#F3F4F6", self.MUTE), # grey
-            "error":      ("#FEE2E2", self.RED),  # red
-        }
-        bg, fg = colors.get(state, (self.CARD, self.TEXT))
-        try:
-            self.file_listbox.itemconfig(idx, bg=bg, fg=fg)
-        except Exception:
-            pass
-
-    # ── Log helpers ───────────────────────────────────────────────────────────
+    # ─── Log helpers ───────────────────────────────────────────────────────
 
     def _log(self, msg: str):
         self.after(0, self._write_log, msg)
 
     def _write_log(self, msg: str):
-        w = self.log_widget
-        w.config(state=tk.NORMAL)
-        line = msg + "\n"
+        self.log_widget.config(state=tk.NORMAL)
+        self.log_widget.insert(tk.END, msg + "\n")
+        self.log_widget.config(state=tk.DISABLED)
+        self.log_widget.see(tk.END)
 
-        # Pick a color tag based on message content
-        m = msg.strip()
-        if m.startswith("─") or m.startswith("="):
-            tag = "sep"
-        elif re.match(r"^\[([1-9]|4[abc])/4\]", m):
-            tag = "step"
-        elif re.search(r"\b(ok|done|finished|complete|saved|written)\b", m, re.I):
-            tag = "ok"
-        elif re.search(r"\b(error|exception|failed|cannot|critical)\b", m, re.I):
-            tag = "err"
-        elif re.search(r"\b(warning|warn|skipping|fallback|deprecated)\b", m, re.I):
-            tag = "warn"
-        elif m.startswith("  →") or m.startswith("→"):
-            tag = "arrow"
-        elif re.search(r"Extracting:|Output folder:|Files to process:|[1/4]", m):
-            tag = "file"
-        else:
-            tag = None
-
-        if tag:
-            w.insert(tk.END, line, tag)
-        else:
-            w.insert(tk.END, line)
-
-        w.config(state=tk.DISABLED)
-        w.see(tk.END)
-
-    # ── Progress / spinner animation ──────────────────────────────────────────
-
-    def _start_spinner(self):
-        self._spinner_idx = 0
-        self._tick_spinner()
-
-    def _tick_spinner(self):
-        if not self._running:
-            return
-        self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
-        # Refresh the status line prefix; the rest is set by _set_status
-        cur = self._status_var.get()
-        # Replace leading spinner char
-        if cur and cur[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
-            self._status_var.set(_SPINNER_FRAMES[self._spinner_idx] + cur[1:])
-        self._spinner_job = self.after(90, self._tick_spinner)
-
-    def _stop_spinner(self):
-        if self._spinner_job:
-            self.after_cancel(self._spinner_job)
-            self._spinner_job = None
-
-    def _set_status(self, text: str):
-        spin = _SPINNER_FRAMES[self._spinner_idx]
-        self.after(0, self._status_var.set, f"{spin}  {text}")
-
-    def _tick_elapsed(self):
-        if not self._running:
-            return
-        elapsed = time.perf_counter() - self._t0
-        cur = self._stats_var.get()
-        # Keep file count prefix, update time
-        parts = cur.split("·")
-        prefix = parts[0].strip() if parts else ""
-        if prefix:
-            self.after(0, self._stats_var.set, f"{prefix}  ·  {elapsed:.0f}s elapsed")
-        self._elapsed_job = self.after(500, self._tick_elapsed)
-
-    def _set_progress(self, value: float, file_idx: int, total: int,
-                      step: int, total_steps: int, step_name: str):
-        self._progress_var.set(max(0.0, min(100.0, value)))
-        self._stats_var.set(
-            f"File {file_idx + 1} / {total}  ·  Step {step}/{total_steps}"
-        )
-        self._set_status(f"{step_name}  —  {self.file_list[file_idx].name}")
-
-    # ── Conversion thread ─────────────────────────────────────────────────────
+    # ─── Conversion thread ────────────────────────────────────────────────
 
     def _start_thread(self):
         if not self.file_list:
@@ -5770,48 +4786,31 @@ class ConverterSuiteApp(tk.Tk):
         if not self.output_dir.get():
             messagebox.showwarning("No output", "Select an output folder first.")
             return
-        self._stop_event.clear()
-        self._running = True
-        self._t0 = time.perf_counter()
-        self._progress_var.set(0.0)
-        self._stats_var.set("")
-        self._status_var.set("")
         self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self._start_spinner()
-        self._tick_elapsed()
         threading.Thread(target=self._run, daemon=True).start()
-
-    def _stop_conversion(self):
-        self._stop_event.set()
-        self.stop_btn.config(state=tk.DISABLED)
-        self._set_status("Stop requested — finishing current step…")
 
     def _run(self):
         out_root = Path(self.output_dir.get()) / "S1000D_Package"
         out_root.mkdir(parents=True, exist_ok=True)
 
-        dm_type   = self.dm_type.get()
-        force_ocr = self.force_ocr.get()
+        dm_type    = self.dm_type.get()
+        force_ocr  = self.force_ocr.get()
         global OLLAMA_MODEL, USE_OLLAMA_TEMPLATE
         global GLMOCR_BACKEND, GLMOCR_OLLAMA_URL, GLMOCR_OLLAMA_MODEL
-        global ODL_USE_HYBRID, ODL_HYBRID_URL
         OLLAMA_MODEL = self.ollama_model_var.get().strip() or OLLAMA_MODEL
         USE_OLLAMA_TEMPLATE = bool(self.use_ollama_template.get())
         GLMOCR_BACKEND = (self.glmocr_backend_var.get().strip().lower() or "default")
         if GLMOCR_BACKEND not in {"default", "ollama"}:
             GLMOCR_BACKEND = "default"
-        GLMOCR_OLLAMA_URL   = self.glmocr_ollama_url_var.get().strip()   or GLMOCR_OLLAMA_URL
+        GLMOCR_OLLAMA_URL = self.glmocr_ollama_url_var.get().strip() or GLMOCR_OLLAMA_URL
         GLMOCR_OLLAMA_MODEL = self.glmocr_ollama_model_var.get().strip() or GLMOCR_OLLAMA_MODEL
-        ODL_USE_HYBRID = bool(self.odl_use_hybrid_var.get())
-        ODL_HYBRID_URL = self.odl_hybrid_url_var.get().strip() or ODL_HYBRID_URL
         out_formats = {
-            "raw_json":    self.out_raw.get(),
-            "sem_json":    self.out_sem.get(),
-            "xml":         self.out_xml.get(),
-            "adoc":        self.out_adoc.get(),
-            "md":          self.out_md.get(),
-            "assets":      self.out_assets.get(),
+            "raw_json": self.out_raw.get(),
+            "sem_json": self.out_sem.get(),
+            "xml":      self.out_xml.get(),
+            "adoc":     self.out_adoc.get(),
+            "md":       self.out_md.get(),
+            "assets":   self.out_assets.get(),
             "glm_default": self.out_glm_default.get(),
         }
 
@@ -5824,33 +4823,20 @@ class ConverterSuiteApp(tk.Tk):
             f"OCR backend : {GLMOCR_BACKEND}",
             f"Ollama pass : {USE_OLLAMA_TEMPLATE}",
             f"Ollama model: {OLLAMA_MODEL}",
-        ] + ([
-            f"OCR Ollama URL  : {GLMOCR_OLLAMA_URL}",
-            f"OCR Ollama model: {GLMOCR_OLLAMA_MODEL}",
-        ] if GLMOCR_BACKEND == "ollama" else []) + [
-            f"Outputs     : {', '.join(k for k, v in out_formats.items() if v)}",
+            f"OCR Ollama URL  : {GLMOCR_OLLAMA_URL}" if GLMOCR_BACKEND == "ollama" else "",
+            f"OCR Ollama model: {GLMOCR_OLLAMA_MODEL}" if GLMOCR_BACKEND == "ollama" else "",
+            f"Outputs     : {', '.join(k for k,v in out_formats.items() if v)}",
             "",
         ]
+        report_lines = [ln for ln in report_lines if ln != ""] + [""]
 
-        total = len(self.file_list)
-        self._log(f"Output folder  : {out_root}")
-        self._log(f"Files to process: {total}\n")
+        self._log(f"Output folder: {out_root}")
+        self._log(f"Files to process: {len(self.file_list)}\n")
 
         ok = fail = 0
         t0 = time.perf_counter()
 
-        for file_idx, src in enumerate(self.file_list):
-            if self._stop_event.is_set():
-                self._log("⏹  Conversion stopped by user.")
-                break
-
-            self.after(0, self._mark_file, file_idx, "processing")
-
-            def _prog(step, total_steps, step_name, _idx=file_idx, _tot=total):
-                pct = (_idx / _tot + step / (total_steps * _tot)) * 100
-                self.after(0, self._set_progress,
-                           pct, _idx, _tot, step, total_steps, step_name)
-
+        for src in self.file_list:
             try:
                 success = build_package(
                     src_path=src,
@@ -5859,11 +4845,8 @@ class ConverterSuiteApp(tk.Tk):
                     force_ocr=force_ocr,
                     out_formats=out_formats,
                     log=self._log,
-                    stop_event=self._stop_event,
-                    progress_cb=_prog,
                 )
                 status = "OK" if success else "SKIPPED"
-                state  = "ok" if success else "skip"
                 if success:
                     ok += 1
                 else:
@@ -5871,36 +4854,25 @@ class ConverterSuiteApp(tk.Tk):
             except Exception as e:
                 self._log(f"  EXCEPTION for {src.name}:\n  {e}")
                 traceback.print_exc()
-                status, state = "ERROR", "error"
+                status = "ERROR"
                 fail += 1
 
-            self.after(0, self._mark_file, file_idx, state)
             report_lines.append(f"  [{status:7s}]  {src.name}")
 
         elapsed = time.perf_counter() - t0
         summary = (
-            f"\n✓ {ok} OK  ✗ {fail} failed  ({elapsed:.1f}s)\n"
-            f"Output: {out_root}"
+            f"\nFinished  ✓ {ok} OK  ✗ {fail} failed  "
+            f"({elapsed:.1f}s)\nOutput: {out_root}"
         )
         self._log(summary)
         report_lines += ["", summary]
 
+        # Write text report
         rpt = out_root / "conversion_report.txt"
         rpt.write_text("\n".join(report_lines), encoding="utf-8")
         self._log(f"\nReport written to: {rpt}")
 
-        self._running = False
-        self._stop_spinner()
-        if self._elapsed_job:
-            self.after_cancel(self._elapsed_job)
-            self._elapsed_job = None
-
-        stopped = self._stop_event.is_set()
-        final_txt = "⏹  Stopped" if stopped else f"✓  Done — {ok}/{total} files converted"
-        self.after(0, self._status_var.set, final_txt)
-        self.after(0, self._progress_var.set, 0.0 if stopped else 100.0)
         self.after(0, self.start_btn.config, {"state": tk.NORMAL})
-        self.after(0, self.stop_btn.config,  {"state": tk.DISABLED})
 
 
 # ────────────────────────────────────────────────────────────────────────────
