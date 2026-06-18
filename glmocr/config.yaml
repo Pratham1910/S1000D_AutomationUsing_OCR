@@ -185,8 +185,8 @@ pipeline:
     # (Use *_safetensors for Transformers; PaddlePaddle/PP-DocLayoutV3 is a PaddleOCR export)
     model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
 
-    # Detection threshold
-    threshold: 0.3
+    # Detection threshold — 0.2 catches weakly-detected regions (seals, handwritten notes)
+    threshold: 0.2
     # threshold_by_class:           # per-class threshold override
     #   0: 0.5
     #   1: 0.3
@@ -269,6 +269,9 @@ pipeline:
         - vision_footnote
         - seal
         - formula_number
+        - header
+        - footer
+        - footnote
       table:
         - table
       formula:
@@ -278,10 +281,7 @@ pipeline:
         - chart
         - image
       abandon:
-        - header
-        - footer
         - number
-        - footnote
         - aside_text
         - reference
         - footer_image
