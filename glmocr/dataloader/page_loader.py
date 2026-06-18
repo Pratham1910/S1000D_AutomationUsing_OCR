@@ -78,6 +78,7 @@ class PageLoader:
         self.top_p = config.top_p
         self.top_k = config.top_k
         self.repetition_penalty = config.repetition_penalty
+        self.stop = getattr(config, "stop", None) or []
 
         # Task prompt mapping
         self.task_prompt_mapping = config.task_prompt_mapping
@@ -321,6 +322,8 @@ class PageLoader:
             request_data["top_k"] = self.top_k
         if "repetition_penalty" not in request_data:
             request_data["repetition_penalty"] = self.repetition_penalty
+        if "stop" not in request_data and self.stop:
+            request_data["stop"] = self.stop
 
         # Process messages
         messages = request_data["messages"]
@@ -380,6 +383,7 @@ class PageLoader:
             "top_p": self.top_p,
             "top_k": self.top_k,
             "repetition_penalty": self.repetition_penalty,
+            **( {"stop": self.stop} if self.stop else {} ),
         }
 
     def _process_msg_standard(self, msg: Dict[str, Any]) -> Dict[str, Any]:

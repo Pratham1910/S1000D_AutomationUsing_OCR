@@ -489,6 +489,8 @@ class OCRClient:
             options["top_k"] = request_data["top_k"]
         if "repetition_penalty" in request_data:
             options["repeat_penalty"] = request_data["repetition_penalty"]
+        if "stop" in request_data:
+            options["stop"] = request_data["stop"]
 
         if options:
             ollama_request["options"] = options

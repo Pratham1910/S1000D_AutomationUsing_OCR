@@ -129,16 +129,6 @@ RICH_XML_TYPES = {"descript", "proced", "procedure", "fault", "sched",
 # Pandoc-aware types (prefer pandoc for AsciiDoc generation)
 PANDOC_IN_EXTS = {".docx", ".md", ".markdown", ".txt", ".text"}
 
-# Ruby/Asciidoctor S1000D converters — adoc → S1000D XML
-RUBY_DIR = Path(__file__).parent / "Ruby"
-_RUBY_FILE_MAP: Dict[str, str] = {
-    "descript":  str(RUBY_DIR / "s1000d1.rb"),
-    "default":   str(RUBY_DIR / "s1000d1.rb"),
-    "proced":    str(RUBY_DIR / "pro.rb"),
-    "procedure": str(RUBY_DIR / "pro.rb"),
-    "fault":     str(RUBY_DIR / "fault.rb"),
-}
-
 TEMPLATE_MAP = {
     "procedure": "DMC-ProceduralData.adoc",
     "proced": "DMC-ProceduralData.adoc",
@@ -1444,7 +1434,6 @@ def extract_pdf_ocr(
 
             all_pages: List[List[Dict]] = []
             mapping: Dict[str, str] = {}
-            doc_md_parts: List[str] = []
             t_start = time.time()
             last_activity = [time.time()]
             hb_stop = threading.Event()
@@ -1470,7 +1459,7 @@ def extract_pdf_ocr(
 
                 threading.Thread(target=_heartbeat, daemon=True).start()
                 try:
-                    for pg_idx, results in enumerate(parser.parse(page_imgs, stream=True, save_layout_visualization=False)):
+                    for pg_idx, results in enumerate(parser.parse(page_imgs, stream=True)):
                         try:
                             raw_obj: Any = None
                             if hasattr(results, "to_json"):
@@ -1484,26 +1473,8 @@ def extract_pdf_ocr(
                                 raw_obj = getattr(results, "json_result")
 
                             pg_pages = _normalize_glm_pages(raw_obj, log, f"{path.name}:p{pg_idx+1}")
-
-                            # Collect page markdown for the combined document .md
-                            pg_md = getattr(results, "markdown_result", None)
-                            if pg_md and pg_md.strip():
-                                doc_md_parts.append(_strip_md_fences(pg_md))
-
-                            # Preserve native GLM output (json/md/imgs) per page.
-                            pg_glm_dir = None
-                            if glm_native_out_dir is not None:
-                                pg_glm_dir = glm_native_out_dir / f"page_{pg_idx+1:04d}"
-                                try:
-                                    pg_glm_dir.mkdir(parents=True, exist_ok=True)
-                                    if hasattr(results, "save"):
-                                        results.save(output_dir=str(pg_glm_dir))
-                                        _clean_saved_md_fences(pg_glm_dir)
-                                except Exception as glm_exc:
-                                    log(f"    page {pg_idx+1}: GLM native save failed: {glm_exc}")
-
                             pg_map = _collect_glm_figure_images(
-                                results, pg_glm_dir, ocr_images_dir,
+                                results, glm_native_out_dir, ocr_images_dir,
                                 f"{path.stem}_p{pg_idx+1}_fig_", log
                             )
                             mapping.update(pg_map)
@@ -1522,20 +1493,6 @@ def extract_pdf_ocr(
                 finally:
                     hb_stop.set()
 
-            if glm_native_out_dir is not None:
-                # Write ONE combined markdown for the whole document (the
-                # md→adoc pipeline consumes this, like the old single-parse
-                # behaviour), alongside the per-page native output folders.
-                try:
-                    glm_native_out_dir.mkdir(parents=True, exist_ok=True)
-                    combined_md = "\n\n".join(doc_md_parts).strip() + "\n"
-                    md_out = glm_native_out_dir / f"{path.stem}.md"
-                    md_out.write_text(combined_md, encoding="utf-8")
-                    log(f"  Combined GLM markdown: {md_out}")
-                except Exception as md_exc:
-                    log(f"  Could not write combined GLM markdown: {md_exc}")
-                log(f"  Preserved native GLM output at: {glm_native_out_dir}")
-
             if any(pg for pg in all_pages):
                 _apply_image_path_remap(all_pages, mapping)
                 return all_pages
@@ -1547,7 +1504,7 @@ def extract_pdf_ocr(
             with open(str(path), "rb") as f:
                 pdf_bytes = f.read()
             log(f"  GLM OCR: processing entire PDF (no page-by-page progress)...")
-            results = parser.parse(pdf_bytes, save_layout_visualization=False)
+            results = parser.parse(pdf_bytes)
 
         _preserve_glm_default_output(results, glm_native_out_dir, log, path.name)
         mapping = _collect_glm_figure_images(
@@ -1579,15 +1536,13 @@ def extract_pdf_ocr(
 
 def _create_glmocr_parser(log):
     """Build a GLM OCR parser using either default settings or Ollama backend."""
-    # Concurrency: raise max_workers so regions are OCR'd in parallel.
-    # max_tokens: 8192 (config default) lets Ollama generate thousands of tokens
-    # per region, causing multi-minute hangs.  Cap at 2048 — sufficient for any
-    # real OCR region.  Also cap request_timeout to avoid 10-min waits on hang.
+    # Concurrency: the pipeline's recognition stage runs OCR requests through
+    # an internal thread pool sized by pipeline.max_workers (config.yaml ships
+    # with 1, which serializes everything). Raise it so multiple text regions
+    # are OCR'd in flight at once. The connection pool must be >= max_workers.
     conc = {
         "pipeline.max_workers": OCR_WORKERS,
         "pipeline.ocr_api.connection_pool_size": max(8, OCR_WORKERS * 2),
-        "pipeline.ocr_api.request_timeout": 90,
-        "pipeline.page_loader.max_tokens": 2048,
     }
     if GLMOCR_BACKEND == "ollama":
         log(f"  GLM OCR backend: ollama ({GLMOCR_OLLAMA_MODEL}), {OCR_WORKERS} worker(s)")
@@ -1726,7 +1681,7 @@ def extract_docx_ocr(
             for img_idx, (img_bytes, img_ext) in enumerate(images):
                 log(f"  OCR image {img_idx + 1}/{len(images)}...")
                 try:
-                    results = parser.parse(_to_rgb_bytes(img_bytes), save_layout_visualization=False)
+                    results = parser.parse(_to_rgb_bytes(img_bytes))
 
                     # Persist full GLM artifacts for the first image only (avoid dir clutter).
                     per_img_glm_dir = None
@@ -2223,7 +2178,7 @@ def extract_image(
     try:
         with _create_glmocr_parser(log) as parser:
             img_bytes = path.read_bytes()
-            results = parser.parse(_to_rgb_bytes(img_bytes), save_layout_visualization=False)
+            results = parser.parse(_to_rgb_bytes(img_bytes))
 
         _preserve_glm_default_output(results, glm_native_out_dir, log, path.name)
         mapping = _collect_glm_figure_images(
@@ -2323,7 +2278,7 @@ def _normalize_glm_pages(raw_obj: Any, log, source_name: str) -> List[List[Dict]
             if isinstance(confidence, (int, float)):
                 meta["confidence"] = float(confidence)
 
-            elements.append(_el(_strip_md_fences(str(content)), str(label), page_idx, meta))
+            elements.append(_el(str(content), str(label), page_idx, meta))
         return elements
 
     # Shape 1: [[...], [...]]
@@ -2358,138 +2313,6 @@ def _normalize_glm_pages(raw_obj: Any, log, source_name: str) -> List[List[Dict]
     return []
 
 
-_MD_FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
-_FENCE_BLOCK_RE = re.compile(r"```[\w+-]*[ \t]*\n(.*?)\n?[ \t]*```", re.DOTALL)
-# Split fence header: ``` alone then markdown/md on next line → normalise to ```markdown
-_SPLIT_HEADER_RE = re.compile(r"```[ \t]*\r?\n[ \t]*(markdown|md)[ \t]*\r?\n", re.IGNORECASE)
-# Bare "markdown" or "md" word on its own line – always an OCR artifact, never real content
-_BARE_LANG_LINE_RE = re.compile(r"^[ \t]*(markdown|md)[ \t]*$", re.MULTILINE | re.IGNORECASE)
-_ADOC_BARE_FENCE_RE = re.compile(r"^[ \t]*```[\w+-]*[ \t]*$", re.MULTILINE)
-# Matches a complete <table…>…</table> block (possibly spanning multiple lines)
-_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
-
-
-def _clean_adoc_text(text: str) -> str:
-    """Strip residual ``` fence artifacts and stray HTML tags from AsciiDoc content."""
-    if not text:
-        return text
-    text = _strip_md_fences(text)
-    text = _ADOC_BARE_FENCE_RE.sub("", text)
-    text = _BARE_LANG_LINE_RE.sub("", text)
-    # Strip stray inline HTML tags (e.g. </>, <br/>, <p>) — table tags are
-    # handled separately by _emit_adoc_lines_with_html_tables before this runs.
-    text = re.sub(r"<[^>]+>", "", text)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
-
-
-def _emit_adoc_lines_with_html_tables(raw_content: str) -> List[str]:
-    """Split raw_content on embedded HTML <table> blocks and emit adoc lines.
-
-    Text segments are cleaned and emitted as plain lines.
-    HTML table segments are converted to |=== adoc blocks.
-    Duplicate tables (whose text content matches nearby plain text) are dropped.
-    """
-    if not raw_content or "<table" not in raw_content.lower():
-        return []   # caller handles the non-HTML path
-
-    lines: List[str] = []
-    seen_text: List[str] = []   # plain-text segments already emitted
-    pos = 0
-    for m in _HTML_TABLE_RE.finditer(raw_content):
-        # Text before this table
-        before = raw_content[pos:m.start()].strip()
-        if before:
-            cleaned = _clean_adoc_text(before)
-            if cleaned:
-                seen_text.append(cleaned.lower())
-                lines.append(cleaned)
-                lines.append("")
-        pos = m.end()
-
-        # Convert HTML table to adoc
-        adoc_block = _table_text_to_adoc_block(m.group(0))
-        if adoc_block:
-            # Drop tables that are just wrapping already-emitted plain text
-            inner_text = re.sub(r"<[^>]+>", " ", m.group(0)).strip().lower()
-            inner_text = re.sub(r"\s+", " ", inner_text)
-            is_dup = any(inner_text in st or st in inner_text for st in seen_text)
-            if not is_dup:
-                lines.append(adoc_block.strip())
-                lines.append("")
-
-    # Any trailing text after the last table
-    tail = raw_content[pos:].strip()
-    if tail:
-        cleaned = _clean_adoc_text(tail)
-        if cleaned:
-            lines.append(cleaned)
-            lines.append("")
-
-    return lines
-
-
-def _strip_md_fences(text: str) -> str:
-    """Clean ```markdown fences the OCR model emits.
-
-    Handles:
-      1. Whole output wrapped in one ```markdown … ``` fence.
-      2. Plain text followed by a fenced duplicate (model echoing text twice).
-      3. Split fence header: ``` alone then 'markdown' on next line.
-      4. Stray unpaired fence-marker lines.
-      5. Bare 'markdown' / 'md' artifact lines left after fence stripping.
-    Legitimate paired code blocks that contain real code are preserved.
-    """
-    if not text or "```" not in text:
-        # Still strip bare "markdown" artifact lines even without backtick fences
-        if re.search(r"^[ \t]*(?:markdown|md)[ \t]*$", text, re.MULTILINE | re.IGNORECASE):
-            text = _BARE_LANG_LINE_RE.sub("", text)
-            return re.sub(r'\n{3,}', '\n\n', text).strip()
-        return text
-    s = text.strip()
-
-    # Step 0: normalise split headers so downstream patterns match them.
-    # ```\nmarkdown\n  →  ```markdown\n
-    s = _SPLIT_HEADER_RE.sub("```markdown\n", s)
-
-    # Step 1: if the whole string is one markdown fence, unwrap it.
-    m = _MD_FENCE_RE.match(s)
-    if m:
-        inner = m.group(1).strip()
-        inner = _BARE_LANG_LINE_RE.sub("", inner)
-        inner = re.sub(r'\n{3,}', '\n\n', inner).strip()
-        if "```" not in inner:
-            return inner
-        s = inner
-
-    # Step 2: drop fenced blocks whose content duplicates outside text.
-    for blk in list(_FENCE_BLOCK_RE.finditer(s)):
-        inner = blk.group(1).strip()
-        inner_cmp = re.sub(r'^(?:markdown|md)\s*\n?', '', inner, flags=re.IGNORECASE).strip()
-        outside = (s[:blk.start()] + s[blk.end():]).strip()
-        if not inner_cmp or inner_cmp in outside:
-            s = s.replace(blk.group(0), "", 1)
-
-    if "```" not in s:
-        s = _BARE_LANG_LINE_RE.sub("", s)
-        return re.sub(r'\n{3,}', '\n\n', s).strip()
-
-    # Step 3: remove bare fence-marker lines not part of any paired block.
-    spans = [b.span() for b in _FENCE_BLOCK_RE.finditer(s)]
-    out_lines = []
-    pos = 0
-    for ln in s.splitlines(keepends=True):
-        start = pos
-        pos += len(ln)
-        if ln.strip().startswith("```") and not any(a <= start < b for a, b in spans):
-            continue
-        out_lines.append(ln)
-    s = "".join(out_lines)
-
-    # Step 4: remove bare "markdown" / "md" artifact lines.
-    s = _BARE_LANG_LINE_RE.sub("", s)
-    return re.sub(r'\n{3,}', '\n\n', s).strip()
-
-
 def _preserve_glm_default_output(results: Any, out_dir: Optional[Path], log, source_name: str) -> None:
     """Persist native GLM output artifacts (json/md/imgs/layout_vis) if supported."""
     if out_dir is None:
@@ -2498,30 +2321,11 @@ def _preserve_glm_default_output(results: Any, out_dir: Optional[Path], log, sou
         out_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(results, "save"):
             results.save(output_dir=str(out_dir))
-            _clean_saved_md_fences(out_dir)
             log(f"  Preserved native GLM output at: {out_dir}")
         else:
             log(f"  GLM result object has no save() method for {source_name}; skipping native output export.")
     except Exception as e:
         log(f"  Could not preserve native GLM output for {source_name}: {e}")
-
-
-def _clean_saved_md_fences(out_dir: Path) -> None:
-    """Clean every .md file saved under out_dir.
-
-    Strips ```markdown fences and removes near-duplicate / punctuation-only
-    lines (overlapping OCR-region echoes). Preserves <img>/<div> tags so the
-    native reference markdown keeps its figure references.
-    """
-    for md_file in out_dir.rglob("*.md"):
-        try:
-            raw = md_file.read_text(encoding="utf-8", errors="replace")
-            cleaned = _strip_md_fences(raw)
-            cleaned = "\n".join(_dedup_output_lines(cleaned.splitlines()))
-            if cleaned != raw:
-                md_file.write_text(cleaned + "\n", encoding="utf-8")
-        except Exception:
-            pass
 
 
 _IMG_COPY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp", ".gif"})
@@ -3939,36 +3743,6 @@ def _module_dm_variant(module_index: int) -> str:
     return chr(ord("A") + (module_index % 26))
 
 
-def _adoc_to_s1000d_xml_via_ruby(adoc_path: Path, xml_path: Path,
-                                  dm_type: str, log) -> bool:
-    """Convert an AsciiDoc file to S1000D XML using the Ruby/Asciidoctor backend.
-
-    descript/default → Ruby/s1000d1.rb
-    proced/procedure → Ruby/pro.rb
-    fault            → Ruby/fault.rb
-    """
-    rb_file = _RUBY_FILE_MAP.get(dm_type, str(RUBY_DIR / "s1000d1.rb"))
-    if not Path(rb_file).exists():
-        log(f"  WARNING: Ruby converter not found: {rb_file}")
-        return False
-    cmd = ["asciidoctor", "-r", rb_file, "-b", "s1000d",
-           "-o", str(xml_path), str(adoc_path)]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                encoding="utf-8", shell=True)
-        if result.returncode != 0:
-            log(f"  WARNING: asciidoctor (Ruby) failed for {adoc_path.name}: "
-                f"{(result.stderr or result.stdout or '').strip()[:300]}")
-            return False
-        return True
-    except FileNotFoundError:
-        log("  WARNING: 'asciidoctor' not found. Install: gem install asciidoctor")
-        return False
-    except Exception as exc:
-        log(f"  WARNING: Ruby conversion error: {exc}")
-        return False
-
-
 def page_to_xml(elements: List[Dict], dm_code: str, title: str,
                 dm_type: str, page_idx: int, dm_variant: Optional[str] = None) -> str:
     """Build a single S1000D Issue 4.2 XML data module for one page."""
@@ -4044,97 +3818,6 @@ _ADOC_HEADER_TEMPLATE = """\
 
 """
 
-_PUNCT_ONLY_RE = re.compile(r'^[\s\W]*$')
-
-
-def _cleanup_output_dir(out_root: Path, log) -> None:
-    """Post-process every .md and .adoc file written under out_root.
-
-    Strips ```markdown fences, removes near-duplicate lines, removes CJK
-    training artifacts, and strips stray HTML/punctuation-only lines.
-    Runs automatically at the end of every processing run.
-    """
-    cleaned_count = 0
-    for ext in ("*.md", "*.adoc"):
-        for path in out_root.rglob(ext):
-            try:
-                original = path.read_text(encoding="utf-8", errors="replace")
-                text = _strip_md_fences(original)
-                text = _ADOC_BARE_FENCE_RE.sub("", text)
-                text = _BARE_LANG_LINE_RE.sub("", text)
-                text = re.sub(r"<[^>]+>", "", text) if ext == "*.adoc" else text
-                text = re.sub(r'\n{3,}', '\n\n', text)
-                text = "\n".join(_dedup_output_lines(text.splitlines()))
-                if text.strip() != original.strip():
-                    path.write_text(text.strip() + "\n", encoding="utf-8")
-                    cleaned_count += 1
-            except Exception:
-                pass
-    if cleaned_count:
-        log(f"  Post-process: cleaned {cleaned_count} file(s) in {out_root}")
-
-
-_CJK_RE = re.compile(
-    r'[一-鿿㐀-䶿　-〿＀-￯'
-    r'぀-ゟ゠-ヿ]'
-)
-
-
-def _is_cjk_artifact(line: str) -> bool:
-    """Return True if the line is a CJK training artifact from the GLM model.
-
-    GLM-OCR (a Chinese model) sometimes leaks Chinese 'answer-hint' text like
-    '答题要点：' into OCR output. Drop lines where CJK chars make up the
-    majority of non-whitespace characters.
-    """
-    s = line.strip()
-    if not s:
-        return False
-    cjk_count = len(_CJK_RE.findall(s))
-    non_ws = len(re.sub(r'\s', '', s))
-    return non_ws > 0 and cjk_count / non_ws >= 0.4
-
-
-def _dedup_output_lines(lines: List[str], window: int = 50) -> List[str]:
-    """Remove near-duplicate, punctuation-only, and CJK-artifact lines.
-
-    Handles overlapping OCR bounding-box artifacts where the layout detector
-    finds multiple regions with the same (or slightly varied) text, producing
-    lines like:
-      (g) Remove Interpanel linkage...
-      g) Remove Interpanel linkage...      ← near-dup, stripped
-      g) Remove Interpanel linkage...      ← near-dup, stripped
-      (                                    ← stray punctuation, stripped
-      答题要点：                            ← CJK training artifact, stripped
-    """
-    def _norm(s: str) -> str:
-        return re.sub(r'[^a-z0-9]', '', s.lower())
-
-    result: List[str] = []
-    seen: List[str] = []
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            result.append(line)
-            continue
-        # Drop punctuation-only lines (stray "(", ".", etc.)
-        if _PUNCT_ONLY_RE.match(stripped):
-            continue
-        # Drop CJK training artifacts from the GLM model
-        if _is_cjk_artifact(stripped):
-            continue
-        n = _norm(stripped)
-        # Only deduplicate lines with meaningful content (>5 chars normalized)
-        if len(n) > 5 and n in seen:
-            continue
-        result.append(line)
-        if n:
-            seen.append(n)
-            if len(seen) > window:
-                seen.pop(0)
-    return result
-
 
 def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
                      dm_type: str, title: str) -> str:
@@ -4179,35 +3862,31 @@ def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
                 else:
                     lines.append(_text_to_adoc_links(raw_content) + "\n")
             else:
-                # Route content containing HTML tables through the dedicated converter
-                if "<table" in raw_content.lower():
-                    lines.extend(_emit_adoc_lines_with_html_tables(raw_content))
-                else:
-                    clean_content = _clean_adoc_text(raw_content)
-                    content_lines = clean_content.splitlines()
-                    in_list = False
-                    for cl in content_lines:
-                        cs = cl.strip()
-                        if not cs:
-                            if in_list:
-                                lines.append("")
-                                in_list = False
-                            continue
-                        nm = _NUM_RE.match(cs)
-                        bm = _BULLET_RE.match(cs)
-                        if nm:
-                            lines.append(f". {nm.group(1)}")
-                            in_list = True
-                        elif bm:
-                            lines.append(f"* {bm.group(1)}")
-                            in_list = True
-                        else:
-                            if in_list:
-                                lines.append("")
-                                in_list = False
-                            lines.append(_text_to_adoc_links(cs))
-                    lines.append("")
-    return "\n".join(_dedup_output_lines(lines))
+                # Detect lists in content
+                content_lines = raw_content.splitlines()
+                in_list = False
+                for cl in content_lines:
+                    cs = cl.strip()
+                    if not cs:
+                        if in_list:
+                            lines.append("")
+                            in_list = False
+                        continue
+                    nm = _NUM_RE.match(cs)
+                    bm = _BULLET_RE.match(cs)
+                    if nm:
+                        lines.append(f". {nm.group(1)}")
+                        in_list = True
+                    elif bm:
+                        lines.append(f"* {bm.group(1)}")
+                        in_list = True
+                    else:
+                        if in_list:
+                            lines.append("")
+                            in_list = False
+                        lines.append(_text_to_adoc_links(cs))
+                lines.append("")
+    return "\n".join(lines)
 
 
 def _adoc_image_ref(img: str) -> str:
@@ -4258,34 +3937,30 @@ def elements_to_adoc_body(pages: List[List[Dict]]) -> str:
                 else:
                     lines.append(_text_to_adoc_links(raw_content) + "\n")
             else:
-                if "<table" in raw_content.lower():
-                    lines.extend(_emit_adoc_lines_with_html_tables(raw_content))
-                else:
-                    clean_content = _clean_adoc_text(raw_content)
-                    content_lines = clean_content.splitlines()
-                    in_list = False
-                    for cl in content_lines:
-                        cs = cl.strip()
-                        if not cs:
-                            if in_list:
-                                lines.append("")
-                                in_list = False
-                            continue
-                        nm = _NUM_RE.match(cs)
-                        bm = _BULLET_RE.match(cs)
-                        if nm:
-                            lines.append(f". {nm.group(1)}")
-                            in_list = True
-                        elif bm:
-                            lines.append(f"* {bm.group(1)}")
-                            in_list = True
-                        else:
-                            if in_list:
-                                lines.append("")
-                                in_list = False
-                            lines.append(_text_to_adoc_links(cs))
-                    lines.append("")
-    return "\n".join(_dedup_output_lines(lines)).strip() + "\n"
+                content_lines = raw_content.splitlines()
+                in_list = False
+                for cl in content_lines:
+                    cs = cl.strip()
+                    if not cs:
+                        if in_list:
+                            lines.append("")
+                            in_list = False
+                        continue
+                    nm = _NUM_RE.match(cs)
+                    bm = _BULLET_RE.match(cs)
+                    if nm:
+                        lines.append(f". {nm.group(1)}")
+                        in_list = True
+                    elif bm:
+                        lines.append(f"* {bm.group(1)}")
+                        in_list = True
+                    else:
+                        if in_list:
+                            lines.append("")
+                            in_list = False
+                        lines.append(_text_to_adoc_links(cs))
+                lines.append("")
+    return "\n".join(lines).strip() + "\n"
 
 
 def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
@@ -4328,7 +4003,7 @@ def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
                     lines.append(raw_content)
                 lines.append("")
             else:
-                for cl in _clean_adoc_text(raw_content).splitlines():
+                for cl in raw_content.splitlines():
                     cs = cl.strip()
                     if not cs:
                         lines.append("")
@@ -4343,7 +4018,7 @@ def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
                         lines.append(cs)
                 lines.append("")
 
-    return "\n".join(_dedup_output_lines(lines)).strip() + "\n"
+    return "\n".join(lines).strip() + "\n"
 
 
 def _scale_bbox_if_needed(bbox: List[float], page_rect) -> Optional[Tuple[float, float, float, float]]:
@@ -4459,11 +4134,10 @@ def export_assets(src_path: Path, pages: List[List[Dict]], out_root: Path, log) 
                 raw_vis = raw_page.get_pixmap(matrix=_fitz.Matrix(2, 2), alpha=False)
                 raw_vis.save(str(raw_vis_dir / base))
                 raw_doc.close()
-            n_exported = len(doc)
             doc.close()
-            log(f"  → {imgs_dir} ({n_exported} image(s))")
-            log(f"  → {vis_dir} ({n_exported} visualization(s))")
-            log(f"  → {raw_vis_dir} ({n_exported} raw visualization(s))")
+            log(f"  → {imgs_dir} ({len(doc)} image(s))")
+            log(f"  → {vis_dir} ({len(doc)} visualization(s))")
+            log(f"  → {raw_vis_dir} ({len(doc)} raw visualization(s))")
             return
         except Exception as e:
             log(f"  Asset export failed for PDF rendering: {e}")
@@ -5434,14 +5108,42 @@ def build_package(
     if len(modules) > 1:
         log(f"  Split into {len(modules)} DMC modules using heading structure.")
 
-    # ── Steps 4a/4b : AsciiDoc first, then Ruby → S1000D XML ────────────────
+    # ── Step 4a : S1000D XML ──────────────────────────────────────────────
     _prog(4, "Generating outputs")
-    adoc_dir = out_root / "04_adoc"
-    _adoc_records: List[tuple] = []   # (adoc_path, dm_type) for Ruby step
+    if out_formats.get("xml"):
+        log(f"[4a/4] Generating S1000D XML ({effective_dm_type})...")
+        xml_dir = out_root / "03_s1000d_xml"
+        xml_dir.mkdir(parents=True, exist_ok=True)
+        xml_written = 0
+        for module in modules:
+            module_index = module["index"]
+            module_title = module["title"] or title
+            module_elements = module["elements"]
+            module_variant = _module_dm_variant(module_index) if len(modules) > 1 else None
+            module_dm_type = infer_dm_type(src_path, [module_elements], log) if dm_type == "auto" else effective_dm_type
+            module_dm_type = _enforce_descript_only(module_dm_type, log)
+            xml_str = page_to_xml(
+                module_elements,
+                dm_code,
+                module_title,
+                module_dm_type,
+                module_index,
+                module_variant,
+            )
+            if len(modules) == 1:
+                xml_name = f"{stem}_sched.xml" if module_dm_type == "sched" else f"{stem}.xml"
+            else:
+                xml_name = f"{stem}_dm{module_index + 1:02d}_{module['slug']}.xml"
+            xml_name = _safe_output_filename(xml_name)
+            xml_path = xml_dir / xml_name
+            xml_path.write_text(xml_str, encoding="utf-8")
+            xml_written += 1
+        log(f"  → {xml_dir}  ({xml_written} file(s))")
 
-    if out_formats.get("adoc") or out_formats.get("xml"):
-        if out_formats.get("adoc"):
-            log(f"[4b/4] Generating AsciiDoc...")
+    # ── Step 4b : AsciiDoc ────────────────────────────────────────────────
+    if out_formats.get("adoc"):
+        log(f"[4b/4] Generating AsciiDoc...")
+        adoc_dir = out_root / "04_adoc"
         adoc_dir.mkdir(parents=True, exist_ok=True)
         adoc_modules = _split_elements_for_adoc(flat_elements, title)
         if len(adoc_modules) > 1:
@@ -5457,6 +5159,8 @@ def build_package(
 
             if module_dm_type == "sched":
                 has_table = any((el.get("native_label") or "") == "table" for el in module_elements)
+                # If a schedule matrix/table exists, preserve it verbatim in ADOC.
+                # Task synthesis is only used for text-only schedule sources.
                 if has_table:
                     body_adoc = elements_to_adoc_body([module_elements])
                 else:
@@ -5467,34 +5171,23 @@ def build_package(
             templated_adoc = apply_template_to_adoc(
                 module_dm_type, module_dm_code, module_title, body_adoc, log
             )
-            adoc_text = templated_adoc if templated_adoc is not None else \
-                elements_to_adoc([module_elements], module_dm_code, module_dm_type, module_title)
 
-            adoc_name = _safe_output_filename(
-                f"{stem}.adoc" if len(adoc_modules) == 1
-                else f"{stem}_dm{module_index + 1:02d}_{module['slug']}.adoc"
-            )
+            if templated_adoc is not None:
+                adoc_text = templated_adoc
+            else:
+                adoc_text = elements_to_adoc([module_elements], module_dm_code, module_dm_type, module_title)
+
+            if len(adoc_modules) == 1:
+                adoc_name = f"{stem}.adoc"
+            else:
+                adoc_name = f"{stem}_dm{module_index + 1:02d}_{module['slug']}.adoc"
+            adoc_name = _safe_output_filename(adoc_name)
+
             adoc_path = adoc_dir / adoc_name
             adoc_path.write_text(adoc_text, encoding="utf-8")
-            _adoc_records.append((adoc_path, module_dm_type))
             adoc_written += 1
 
-        if out_formats.get("adoc"):
-            log(f"  → {adoc_dir}  ({adoc_written} file(s))")
-
-    # ── Step 4a : S1000D XML via Ruby/Asciidoctor (adoc → XML) ──────────────
-    if out_formats.get("xml"):
-        log(f"[4a/4] Generating S1000D XML via Ruby ({effective_dm_type})...")
-        xml_dir = out_root / "03_s1000d_xml"
-        xml_dir.mkdir(parents=True, exist_ok=True)
-        xml_written = 0
-        for adoc_src, mod_dm_type in _adoc_records:
-            xml_path = xml_dir / _safe_output_filename(adoc_src.stem + ".xml")
-            if _adoc_to_s1000d_xml_via_ruby(adoc_src, xml_path, mod_dm_type, log):
-                xml_written += 1
-            else:
-                log(f"  Ruby conversion failed for {adoc_src.name} — skipped.")
-        log(f"  → {xml_dir}  ({xml_written} file(s))")
+        log(f"  → {adoc_dir}  ({adoc_written} file(s))")
 
     # ── Step 4c : Markdown ────────────────────────────────────────────────
     if out_formats.get("md"):
@@ -5510,9 +5203,6 @@ def build_package(
     if out_formats.get("assets"):
         log(f"[4d/4] Exporting assets (imgs/layout_vis)...")
         export_assets(src_path, sem_pages, out_root, log)
-
-    # ── Post-process: clean all .md and .adoc files written this run ──────
-    _cleanup_output_dir(out_root, log)
 
     return True
 

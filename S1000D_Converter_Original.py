@@ -121,6 +121,16 @@ RICH_XML_TYPES = {"descript", "proced", "procedure", "fault", "sched",
 # Pandoc-aware types (prefer pandoc for AsciiDoc generation)
 PANDOC_IN_EXTS = {".docx", ".md", ".markdown", ".txt", ".text"}
 
+# Ruby/Asciidoctor S1000D converters — adoc → S1000D XML
+RUBY_DIR = Path(__file__).parent / "Ruby"
+_RUBY_FILE_MAP: Dict[str, str] = {
+    "descript":  str(RUBY_DIR / "s1000d1.rb"),
+    "default":   str(RUBY_DIR / "s1000d1.rb"),
+    "proced":    str(RUBY_DIR / "pro.rb"),
+    "procedure": str(RUBY_DIR / "pro.rb"),
+    "fault":     str(RUBY_DIR / "fault.rb"),
+}
+
 TEMPLATE_MAP = {
     "procedure": "DMC-ProceduralData.adoc",
     "proced": "DMC-ProceduralData.adoc",
@@ -1677,38 +1687,115 @@ def extract_image(path: Path, log, glm_native_out_dir: Optional[Path] = None) ->
 
 _MD_FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
 _FENCE_BLOCK_RE = re.compile(r"```[\w+-]*[ \t]*\n(.*?)\n?[ \t]*```", re.DOTALL)
+# Split fence header: ``` alone then markdown/md on next line → normalise to ```markdown
+_SPLIT_HEADER_RE = re.compile(r"```[ \t]*\r?\n[ \t]*(markdown|md)[ \t]*\r?\n", re.IGNORECASE)
+# Bare "markdown" or "md" word on its own line – always an OCR artifact, never real content
+_BARE_LANG_LINE_RE = re.compile(r"^[ \t]*(markdown|md)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+_ADOC_BARE_FENCE_RE = re.compile(r"^[ \t]*```[\w+-]*[ \t]*$", re.MULTILINE)
+_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+
+
+def _clean_adoc_text(text: str) -> str:
+    """Strip residual ``` fence artifacts and stray HTML tags from AsciiDoc content."""
+    if not text:
+        return text
+    text = _strip_md_fences(text)
+    text = _ADOC_BARE_FENCE_RE.sub("", text)
+    text = _BARE_LANG_LINE_RE.sub("", text)
+    # Strip stray inline HTML tags (e.g. </>, <br/>, <p>) — table tags are
+    # handled separately by _emit_adoc_lines_with_html_tables before this runs.
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
+
+
+def _emit_adoc_lines_with_html_tables(raw_content: str) -> List[str]:
+    """Split raw_content on embedded HTML <table> blocks and emit adoc lines.
+
+    Text segments are cleaned and emitted as plain lines.
+    HTML table segments are converted to |=== adoc blocks.
+    Duplicate tables (whose text content matches nearby plain text) are dropped.
+    """
+    if not raw_content or "<table" not in raw_content.lower():
+        return []
+
+    lines: List[str] = []
+    seen_text: List[str] = []
+    pos = 0
+    for m in _HTML_TABLE_RE.finditer(raw_content):
+        before = raw_content[pos:m.start()].strip()
+        if before:
+            cleaned = _clean_adoc_text(before)
+            if cleaned:
+                seen_text.append(cleaned.lower())
+                lines.append(cleaned)
+                lines.append("")
+        pos = m.end()
+
+        adoc_block = _table_text_to_adoc_block(m.group(0))
+        if adoc_block:
+            inner_text = re.sub(r"<[^>]+>", " ", m.group(0)).strip().lower()
+            inner_text = re.sub(r"\s+", " ", inner_text)
+            is_dup = any(inner_text in st or st in inner_text for st in seen_text)
+            if not is_dup:
+                lines.append(adoc_block.strip())
+                lines.append("")
+
+    tail = raw_content[pos:].strip()
+    if tail:
+        cleaned = _clean_adoc_text(tail)
+        if cleaned:
+            lines.append(cleaned)
+            lines.append("")
+
+    return lines
 
 
 def _strip_md_fences(text: str) -> str:
-    """Clean ```markdown fences the OCR model sometimes emits.
+    """Clean ```markdown fences the OCR model emits.
 
-    Handles: (1) the whole output wrapped in one fence, (2) plain text
-    followed by a fenced duplicate of the same text, (3) stray unpaired
-    fence-marker lines. Legitimate paired, non-duplicate code blocks are
-    preserved.
+    Handles:
+      1. Whole output wrapped in one ```markdown … ``` fence.
+      2. Plain text followed by a fenced duplicate (model echoing text twice).
+      3. Split fence header: ``` alone then 'markdown' on next line.
+      4. Stray unpaired fence-marker lines.
+      5. Bare 'markdown' / 'md' artifact lines left after fence stripping.
+    Legitimate paired code blocks that contain real code are preserved.
     """
     if not text or "```" not in text:
+        # Still strip bare "markdown" artifact lines even without backtick fences
+        if re.search(r"^[ \t]*(?:markdown|md)[ \t]*$", text, re.MULTILINE | re.IGNORECASE):
+            text = _BARE_LANG_LINE_RE.sub("", text)
+            return re.sub(r'\n{3,}', '\n\n', text).strip()
         return text
     s = text.strip()
 
+    # Step 0: normalise split headers so downstream patterns match them.
+    # ```\nmarkdown\n  →  ```markdown\n
+    s = _SPLIT_HEADER_RE.sub("```markdown\n", s)
+
+    # Step 1: if the whole string is one markdown fence, unwrap it.
     m = _MD_FENCE_RE.match(s)
     if m:
-        s = m.group(1).strip()
-        if "```" not in s:
-            return s
+        inner = m.group(1).strip()
+        inner = _BARE_LANG_LINE_RE.sub("", inner)
+        inner = re.sub(r'\n{3,}', '\n\n', inner).strip()
+        if "```" not in inner:
+            return inner
+        s = inner
 
-    # Drop fenced blocks whose content already appears outside the fence
-    # (model echoing the same text twice).
+    # Step 2: drop fenced blocks whose content duplicates outside text.
     for blk in list(_FENCE_BLOCK_RE.finditer(s)):
         inner = blk.group(1).strip()
-        outside = s[:blk.start()] + s[blk.end():]
-        if not inner or inner in outside:
+        inner_cmp = re.sub(r'^(?:markdown|md)\s*\n?', '', inner, flags=re.IGNORECASE).strip()
+        outside = (s[:blk.start()] + s[blk.end():]).strip()
+        if not inner_cmp or inner_cmp in outside:
             s = s.replace(blk.group(0), "", 1)
 
     if "```" not in s:
-        return s.strip()
+        s = _BARE_LANG_LINE_RE.sub("", s)
+        return re.sub(r'\n{3,}', '\n\n', s).strip()
 
-    # Remove bare fence-marker lines that are not part of a paired block.
+    # Step 3: remove bare fence-marker lines not part of any paired block.
     spans = [b.span() for b in _FENCE_BLOCK_RE.finditer(s)]
     out_lines = []
     pos = 0
@@ -1718,7 +1805,11 @@ def _strip_md_fences(text: str) -> str:
         if ln.strip().startswith("```") and not any(a <= start < b for a, b in spans):
             continue
         out_lines.append(ln)
-    return "".join(out_lines).strip()
+    s = "".join(out_lines)
+
+    # Step 4: remove bare "markdown" / "md" artifact lines.
+    s = _BARE_LANG_LINE_RE.sub("", s)
+    return re.sub(r'\n{3,}', '\n\n', s).strip()
 
 
 def _normalize_glm_pages(raw_obj: Any, log, source_name: str) -> List[List[Dict]]:
@@ -1832,12 +1923,14 @@ def _preserve_glm_default_output(results: Any, out_dir: Optional[Path], log, sou
         out_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(results, "save"):
             results.save(output_dir=str(out_dir))
-            # The OCR model sometimes wraps content in ```markdown fences —
-            # clean every saved .md in place.
+            # The OCR model sometimes wraps content in ```markdown fences and
+            # echoes overlapping OCR regions — strip fences and dedup lines in
+            # every saved .md. <img>/<div> tags are preserved for figures.
             for md_file in out_dir.rglob("*.md"):
                 try:
                     raw = md_file.read_text(encoding="utf-8", errors="replace")
                     cleaned = _strip_md_fences(raw)
+                    cleaned = "\n".join(_dedup_output_lines(cleaned.splitlines()))
                     if cleaned != raw:
                         md_file.write_text(cleaned + "\n", encoding="utf-8")
                 except Exception:
@@ -3102,6 +3195,31 @@ def _module_dm_variant(module_index: int) -> str:
     return chr(ord("A") + (module_index % 26))
 
 
+def _adoc_to_s1000d_xml_via_ruby(adoc_path: Path, xml_path: Path,
+                                  dm_type: str, log) -> bool:
+    """Convert an AsciiDoc file to S1000D XML using the Ruby/Asciidoctor backend."""
+    rb_file = _RUBY_FILE_MAP.get(dm_type, str(RUBY_DIR / "s1000d1.rb"))
+    if not Path(rb_file).exists():
+        log(f"  WARNING: Ruby converter not found: {rb_file}")
+        return False
+    cmd = ["asciidoctor", "-r", rb_file, "-b", "s1000d",
+           "-o", str(xml_path), str(adoc_path)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding="utf-8", shell=True)
+        if result.returncode != 0:
+            log(f"  WARNING: asciidoctor (Ruby) failed for {adoc_path.name}: "
+                f"{(result.stderr or result.stdout or '').strip()[:300]}")
+            return False
+        return True
+    except FileNotFoundError:
+        log("  WARNING: 'asciidoctor' not found. Install: gem install asciidoctor")
+        return False
+    except Exception as exc:
+        log(f"  WARNING: Ruby conversion error: {exc}")
+        return False
+
+
 def page_to_xml(elements: List[Dict], dm_code: str, title: str,
                 dm_type: str, page_idx: int, dm_variant: Optional[str] = None) -> str:
     """Build a single S1000D Issue 4.2 XML data module for one page."""
@@ -3177,6 +3295,89 @@ _ADOC_HEADER_TEMPLATE = """\
 
 """
 
+_PUNCT_ONLY_RE = re.compile(r'^[\s\W]*$')
+
+
+def _cleanup_output_dir(out_root: Path, log) -> None:
+    """Post-process every .md and .adoc file written under out_root.
+
+    Strips ```markdown fences, removes near-duplicate lines, removes CJK
+    training artifacts, and strips stray HTML/punctuation-only lines.
+    Runs automatically at the end of every processing run.
+    """
+    cleaned_count = 0
+    for ext in ("*.md", "*.adoc"):
+        for path in out_root.rglob(ext):
+            try:
+                original = path.read_text(encoding="utf-8", errors="replace")
+                text = _strip_md_fences(original)
+                text = _ADOC_BARE_FENCE_RE.sub("", text)
+                text = _BARE_LANG_LINE_RE.sub("", text)
+                text = re.sub(r"<[^>]+>", "", text) if ext == "*.adoc" else text
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                text = "\n".join(_dedup_output_lines(text.splitlines()))
+                if text.strip() != original.strip():
+                    path.write_text(text.strip() + "\n", encoding="utf-8")
+                    cleaned_count += 1
+            except Exception:
+                pass
+    if cleaned_count:
+        log(f"  Post-process: cleaned {cleaned_count} file(s) in {out_root}")
+
+
+_CJK_RE = re.compile(
+    r'[一-鿿㐀-䶿　-〿＀-￯'
+    r'぀-ゟ゠-ヿ]'
+)
+
+
+def _is_cjk_artifact(line: str) -> bool:
+    """Return True if the line is a CJK training artifact from the GLM model."""
+    s = line.strip()
+    if not s:
+        return False
+    cjk_count = len(_CJK_RE.findall(s))
+    non_ws = len(re.sub(r'\s', '', s))
+    return non_ws > 0 and cjk_count / non_ws >= 0.4
+
+
+def _dedup_output_lines(lines: List[str], window: int = 50) -> List[str]:
+    """Remove near-duplicate, punctuation-only, and CJK-artifact lines.
+
+    Handles overlapping OCR bounding-box artifacts where the layout detector
+    finds multiple regions with the same (or slightly varied) text, producing
+    lines like:
+      (g) Remove Interpanel linkage...
+      g) Remove Interpanel linkage...      <- near-dup, stripped
+      g) Remove Interpanel linkage...      <- near-dup, stripped
+      (                                    <- stray punctuation, stripped
+      答题要点：                            <- CJK training artifact, stripped
+    """
+    def _norm(s: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', s.lower())
+
+    result: List[str] = []
+    seen: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append(line)
+            continue
+        if _PUNCT_ONLY_RE.match(stripped):
+            continue
+        if _is_cjk_artifact(stripped):
+            continue
+        n = _norm(stripped)
+        if len(n) > 5 and n in seen:
+            continue
+        result.append(line)
+        if n:
+            seen.append(n)
+            if len(seen) > window:
+                seen.pop(0)
+    return result
+
 
 def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
                      dm_type: str, title: str) -> str:
@@ -3221,31 +3422,34 @@ def elements_to_adoc(pages: List[List[Dict]], dm_code: str,
                 else:
                     lines.append(_text_to_adoc_links(raw_content) + "\n")
             else:
-                # Detect lists in content
-                content_lines = raw_content.splitlines()
-                in_list = False
-                for cl in content_lines:
-                    cs = cl.strip()
-                    if not cs:
-                        if in_list:
-                            lines.append("")
-                            in_list = False
-                        continue
-                    nm = _NUM_RE.match(cs)
-                    bm = _BULLET_RE.match(cs)
-                    if nm:
-                        lines.append(f". {nm.group(1)}")
-                        in_list = True
-                    elif bm:
-                        lines.append(f"* {bm.group(1)}")
-                        in_list = True
-                    else:
-                        if in_list:
-                            lines.append("")
-                            in_list = False
-                        lines.append(_text_to_adoc_links(cs))
-                lines.append("")
-    return "\n".join(lines)
+                if "<table" in raw_content.lower():
+                    lines.extend(_emit_adoc_lines_with_html_tables(raw_content))
+                else:
+                    clean_content = _clean_adoc_text(raw_content)
+                    content_lines = clean_content.splitlines()
+                    in_list = False
+                    for cl in content_lines:
+                        cs = cl.strip()
+                        if not cs:
+                            if in_list:
+                                lines.append("")
+                                in_list = False
+                            continue
+                        nm = _NUM_RE.match(cs)
+                        bm = _BULLET_RE.match(cs)
+                        if nm:
+                            lines.append(f". {nm.group(1)}")
+                            in_list = True
+                        elif bm:
+                            lines.append(f"* {bm.group(1)}")
+                            in_list = True
+                        else:
+                            if in_list:
+                                lines.append("")
+                                in_list = False
+                            lines.append(_text_to_adoc_links(cs))
+                    lines.append("")
+    return "\n".join(_dedup_output_lines(lines))
 
 
 def elements_to_adoc_body(pages: List[List[Dict]]) -> str:
@@ -3282,30 +3486,34 @@ def elements_to_adoc_body(pages: List[List[Dict]]) -> str:
                 else:
                     lines.append(_text_to_adoc_links(raw_content) + "\n")
             else:
-                content_lines = raw_content.splitlines()
-                in_list = False
-                for cl in content_lines:
-                    cs = cl.strip()
-                    if not cs:
-                        if in_list:
-                            lines.append("")
-                            in_list = False
-                        continue
-                    nm = _NUM_RE.match(cs)
-                    bm = _BULLET_RE.match(cs)
-                    if nm:
-                        lines.append(f". {nm.group(1)}")
-                        in_list = True
-                    elif bm:
-                        lines.append(f"* {bm.group(1)}")
-                        in_list = True
-                    else:
-                        if in_list:
-                            lines.append("")
-                            in_list = False
-                        lines.append(_text_to_adoc_links(cs))
-                lines.append("")
-    return "\n".join(lines).strip() + "\n"
+                if "<table" in raw_content.lower():
+                    lines.extend(_emit_adoc_lines_with_html_tables(raw_content))
+                else:
+                    clean_content = _clean_adoc_text(raw_content)
+                    content_lines = clean_content.splitlines()
+                    in_list = False
+                    for cl in content_lines:
+                        cs = cl.strip()
+                        if not cs:
+                            if in_list:
+                                lines.append("")
+                                in_list = False
+                            continue
+                        nm = _NUM_RE.match(cs)
+                        bm = _BULLET_RE.match(cs)
+                        if nm:
+                            lines.append(f". {nm.group(1)}")
+                            in_list = True
+                        elif bm:
+                            lines.append(f"* {bm.group(1)}")
+                            in_list = True
+                        else:
+                            if in_list:
+                                lines.append("")
+                                in_list = False
+                            lines.append(_text_to_adoc_links(cs))
+                    lines.append("")
+    return "\n".join(_dedup_output_lines(lines)).strip() + "\n"
 
 
 def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
@@ -3348,7 +3556,7 @@ def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
                     lines.append(raw_content)
                 lines.append("")
             else:
-                for cl in raw_content.splitlines():
+                for cl in _clean_adoc_text(raw_content).splitlines():
                     cs = cl.strip()
                     if not cs:
                         lines.append("")
@@ -3363,7 +3571,7 @@ def elements_to_markdown(pages: List[List[Dict]], title: str) -> str:
                         lines.append(cs)
                 lines.append("")
 
-    return "\n".join(lines).strip() + "\n"
+    return "\n".join(_dedup_output_lines(lines)).strip() + "\n"
 
 
 def _scale_bbox_if_needed(bbox: List[float], page_rect) -> Optional[Tuple[float, float, float, float]]:
@@ -4410,41 +4618,13 @@ def build_package(
     if len(modules) > 1:
         log(f"  Split into {len(modules)} DMC modules using heading structure.")
 
-    # ── Step 4a : S1000D XML ──────────────────────────────────────────────
-    if out_formats.get("xml"):
-        log(f"[4a/4] Generating S1000D XML ({effective_dm_type})...")
-        xml_dir = out_root / "03_s1000d_xml"
-        xml_dir.mkdir(parents=True, exist_ok=True)
-        xml_written = 0
-        for module in modules:
-            module_index = module["index"]
-            module_title = module["title"] or title
-            module_elements = module["elements"]
-            module_variant = _module_dm_variant(module_index) if len(modules) > 1 else None
-            module_dm_type = infer_dm_type(src_path, [module_elements], log) if dm_type == "auto" else effective_dm_type
-            module_dm_type = _enforce_descript_only(module_dm_type, log)
-            xml_str = page_to_xml(
-                module_elements,
-                dm_code,
-                module_title,
-                module_dm_type,
-                module_index,
-                module_variant,
-            )
-            if len(modules) == 1:
-                xml_name = f"{stem}_sched.xml" if module_dm_type == "sched" else f"{stem}.xml"
-            else:
-                xml_name = f"{stem}_dm{module_index + 1:02d}_{module['slug']}.xml"
-            xml_name = _safe_output_filename(xml_name)
-            xml_path = xml_dir / xml_name
-            xml_path.write_text(xml_str, encoding="utf-8")
-            xml_written += 1
-        log(f"  → {xml_dir}  ({xml_written} file(s))")
+    # ── Steps 4a/4b : AsciiDoc first, then Ruby → S1000D XML ────────────────
+    adoc_dir = out_root / "04_adoc"
+    _adoc_records: List[tuple] = []
 
-    # ── Step 4b : AsciiDoc ────────────────────────────────────────────────
-    if out_formats.get("adoc"):
-        log(f"[4b/4] Generating AsciiDoc...")
-        adoc_dir = out_root / "04_adoc"
+    if out_formats.get("adoc") or out_formats.get("xml"):
+        if out_formats.get("adoc"):
+            log(f"[4b/4] Generating AsciiDoc...")
         adoc_dir.mkdir(parents=True, exist_ok=True)
         adoc_modules = _split_elements_for_adoc(flat_elements, title)
         if len(adoc_modules) > 1:
@@ -4460,8 +4640,6 @@ def build_package(
 
             if module_dm_type == "sched":
                 has_table = any((el.get("native_label") or "") == "table" for el in module_elements)
-                # If a schedule matrix/table exists, preserve it verbatim in ADOC.
-                # Task synthesis is only used for text-only schedule sources.
                 if has_table:
                     body_adoc = elements_to_adoc_body([module_elements])
                 else:
@@ -4472,23 +4650,34 @@ def build_package(
             templated_adoc = apply_template_to_adoc(
                 module_dm_type, module_dm_code, module_title, body_adoc, log
             )
+            adoc_text = templated_adoc if templated_adoc is not None else \
+                elements_to_adoc([module_elements], module_dm_code, module_dm_type, module_title)
 
-            if templated_adoc is not None:
-                adoc_text = templated_adoc
-            else:
-                adoc_text = elements_to_adoc([module_elements], module_dm_code, module_dm_type, module_title)
-
-            if len(adoc_modules) == 1:
-                adoc_name = f"{stem}.adoc"
-            else:
-                adoc_name = f"{stem}_dm{module_index + 1:02d}_{module['slug']}.adoc"
-            adoc_name = _safe_output_filename(adoc_name)
-
+            adoc_name = _safe_output_filename(
+                f"{stem}.adoc" if len(adoc_modules) == 1
+                else f"{stem}_dm{module_index + 1:02d}_{module['slug']}.adoc"
+            )
             adoc_path = adoc_dir / adoc_name
             adoc_path.write_text(adoc_text, encoding="utf-8")
+            _adoc_records.append((adoc_path, module_dm_type))
             adoc_written += 1
 
-        log(f"  → {adoc_dir}  ({adoc_written} file(s))")
+        if out_formats.get("adoc"):
+            log(f"  → {adoc_dir}  ({adoc_written} file(s))")
+
+    # ── Step 4a : S1000D XML via Ruby/Asciidoctor (adoc → XML) ──────────────
+    if out_formats.get("xml"):
+        log(f"[4a/4] Generating S1000D XML via Ruby ({effective_dm_type})...")
+        xml_dir = out_root / "03_s1000d_xml"
+        xml_dir.mkdir(parents=True, exist_ok=True)
+        xml_written = 0
+        for adoc_src, mod_dm_type in _adoc_records:
+            xml_path = xml_dir / _safe_output_filename(adoc_src.stem + ".xml")
+            if _adoc_to_s1000d_xml_via_ruby(adoc_src, xml_path, mod_dm_type, log):
+                xml_written += 1
+            else:
+                log(f"  Ruby conversion failed for {adoc_src.name} — skipped.")
+        log(f"  → {xml_dir}  ({xml_written} file(s))")
 
     # ── Step 4c : Markdown ────────────────────────────────────────────────
     if out_formats.get("md"):
@@ -4504,6 +4693,9 @@ def build_package(
     if out_formats.get("assets"):
         log(f"[4d/4] Exporting assets (imgs/layout_vis)...")
         export_assets(src_path, sem_pages, out_root, log)
+
+    # ── Post-process: clean all .md and .adoc files written this run ──────
+    _cleanup_output_dir(out_root, log)
 
     return True
 

@@ -148,11 +148,12 @@ class MaaSApiConfig(_BaseConfig):
 
 
 class PageLoaderConfig(_BaseConfig):
-    max_tokens: int = 8192
-    temperature: float = 0.0
+    max_tokens: int = 2048
+    temperature: float = 0.1
     top_p: float = 0.00001
     top_k: int = 1
-    repetition_penalty: float = 1.1
+    repetition_penalty: float = 1.2
+    stop: Optional[List[str]] = None
 
     t_patch_size: int = 2
     patch_expand_factor: int = 1
