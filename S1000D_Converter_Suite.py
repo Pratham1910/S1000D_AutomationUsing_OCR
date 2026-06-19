@@ -5939,6 +5939,212 @@ class ConverterSuiteApp(tk.Tk):
         ]:
             ttk.Checkbutton(fmt, text=txt, variable=var).pack(side=tk.LEFT, padx=(0, 6))
 
+        # Layout label settings button
+        ttk.Button(frm, text="Layout Labels…", command=self._open_layout_settings
+                   ).grid(row=12, column=0, sticky="w", pady=(8, 0))
+
+    # ── Layout label settings ─────────────────────────────────────────────────
+
+    _ALL_LABELS = [
+        "abstract", "algorithm", "aside_text", "chart", "content",
+        "display_formula", "doc_title", "figure_title", "footer", "footer_image",
+        "footnote", "formula_number", "header", "header_image", "image",
+        "inline_formula", "number", "paragraph_title", "reference",
+        "reference_content", "seal", "table", "text", "vertical_text",
+        "vision_footnote",
+    ]
+    _CATEGORIES = ["text", "table", "formula", "skip", "abandon"]
+
+    _DEFAULT_MAPPING = {
+        "text":    ["abstract", "algorithm", "content", "doc_title", "figure_title",
+                    "paragraph_title", "reference_content", "text", "vertical_text",
+                    "vision_footnote", "seal", "formula_number", "header", "footer", "footnote"],
+        "table":   ["table"],
+        "formula": ["display_formula", "inline_formula"],
+        "skip":    ["chart", "image"],
+        "abandon": ["number", "aside_text", "reference", "footer_image", "header_image"],
+    }
+
+    def _config_yaml_path(self) -> Optional[Path]:
+        here = Path(__file__).parent
+        for candidate in [
+            here / "glmocr" / "config.yaml",
+            here.parent / "glmocr" / "config.yaml",
+        ]:
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _load_layout_mapping(self) -> Dict[str, List[str]]:
+        p = self._config_yaml_path()
+        if p is None:
+            return {k: list(v) for k, v in self._DEFAULT_MAPPING.items()}
+        try:
+            import yaml
+            with open(p, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            raw = (cfg.get("pipeline", {})
+                      .get("layout", {})
+                      .get("label_task_mapping", {}))
+            if raw:
+                return {cat: list(lbls or []) for cat, lbls in raw.items()}
+        except Exception:
+            pass
+        return {k: list(v) for k, v in self._DEFAULT_MAPPING.items()}
+
+    def _save_layout_mapping(self, mapping: Dict[str, List[str]]) -> bool:
+        p = self._config_yaml_path()
+        if p is None:
+            messagebox.showerror("Save failed",
+                                 "Could not find glmocr/config.yaml next to this script.")
+            return False
+        try:
+            import yaml
+            with open(p, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            cfg.setdefault("pipeline", {}).setdefault("layout", {})["label_task_mapping"] = mapping
+            with open(p, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            return True
+        except ImportError:
+            messagebox.showerror("Missing library",
+                                 "PyYAML is required to save settings.\n"
+                                 "Run:  pip install pyyaml")
+            return False
+        except Exception as e:
+            messagebox.showerror("Save failed", str(e))
+            return False
+
+    def _open_layout_settings(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Layout Label Settings")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        B = self.BG; C = self.CARD; I = self.IND; T = self.TEXT; M = self.MUTE
+        dlg.configure(bg=B)
+
+        current = self._load_layout_mapping()
+
+        label_cat: Dict[str, tk.StringVar] = {}
+        for cat, labels in current.items():
+            for lbl in labels:
+                if lbl in self._ALL_LABELS:
+                    label_cat[lbl] = tk.StringVar(value=cat)
+        for lbl in self._ALL_LABELS:
+            if lbl not in label_cat:
+                label_cat[lbl] = tk.StringVar(value="abandon")
+
+        # Header
+        hdr = tk.Frame(dlg, bg=I, pady=8)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="Layout Label Settings",
+                 bg=I, fg="#FFF", font=("Segoe UI", 11, "bold")).pack()
+        tk.Label(hdr, text="Assign each detected region label to a processing category.",
+                 bg=I, fg="#C7D2FE", font=("Segoe UI", 8)).pack()
+
+        # Category legend
+        cat_colors = {
+            "text":    "#16A34A",
+            "table":   "#2563EB",
+            "formula": "#7C3AED",
+            "skip":    "#D97706",
+            "abandon": "#DC2626",
+        }
+        cat_tips = {
+            "text":    "OCR as plain text",
+            "table":   "OCR with table prompt",
+            "formula": "OCR with formula prompt",
+            "skip":    "Keep region, no OCR",
+            "abandon": "Discard entirely",
+        }
+        leg = tk.Frame(dlg, bg=B, pady=4)
+        leg.pack(fill=tk.X, padx=16)
+        tk.Label(leg, text="Categories:", bg=B, fg=T,
+                 font=("Segoe UI", 8, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        for cat in self._CATEGORIES:
+            tk.Label(leg, text=f"● {cat}  ({cat_tips[cat]})",
+                     bg=B, fg=cat_colors[cat],
+                     font=("Segoe UI", 8)).pack(side=tk.LEFT, padx=(0, 12))
+
+        # Scrollable label grid
+        canvas = tk.Canvas(dlg, bg=C, highlightthickness=0, width=520, height=460)
+        sb = ttk.Scrollbar(dlg, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=8)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0), pady=8)
+
+        inner = tk.Frame(canvas, bg=C)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Column headers
+        for c_idx, (txt, fg) in enumerate([("Label", T), ("Category", T), ("Preview", M)]):
+            tk.Label(inner, text=txt, bg=C, fg=fg,
+                     font=("Segoe UI", 8, "bold"),
+                     width=18 if c_idx == 0 else (14 if c_idx == 1 else 24),
+                     anchor="w").grid(row=0, column=c_idx, padx=(8, 4), pady=(4, 2), sticky="w")
+        tk.Frame(inner, bg=self.BDR, height=1).grid(
+            row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))
+
+        for r_idx, lbl in enumerate(sorted(self._ALL_LABELS), start=2):
+            var = label_cat[lbl]
+
+            preview = tk.Label(inner,
+                               text=f"→ {cat_tips.get(var.get(), var.get())}",
+                               bg=C, fg=cat_colors.get(var.get(), M),
+                               font=("Segoe UI", 8, "italic"), width=26, anchor="w")
+
+            def _make_updater(v, p):
+                def _upd(*_):
+                    p.config(fg=cat_colors.get(v.get(), M),
+                             text=f"→ {cat_tips.get(v.get(), v.get())}")
+                return _upd
+
+            var.trace_add("write", _make_updater(var, preview))
+
+            tk.Label(inner, text=lbl, bg=C, fg=T,
+                     font=("Segoe UI", 9), width=20, anchor="w"
+                     ).grid(row=r_idx, column=0, padx=(8, 4), pady=1, sticky="w")
+            om = ttk.OptionMenu(inner, var, var.get(), *self._CATEGORIES)
+            om.config(width=10)
+            om.grid(row=r_idx, column=1, padx=4, pady=1, sticky="w")
+            preview.grid(row=r_idx, column=2, padx=4, pady=1, sticky="w")
+
+        # Footer buttons
+        foot = tk.Frame(dlg, bg=B, pady=8)
+        foot.pack(fill=tk.X, padx=16)
+
+        def _reset():
+            if messagebox.askyesno("Reset defaults",
+                                   "Reset all labels to default categories?",
+                                   parent=dlg):
+                for lbl in self._ALL_LABELS:
+                    for cat, lbls in self._DEFAULT_MAPPING.items():
+                        if lbl in lbls:
+                            label_cat[lbl].set(cat)
+                            break
+                    else:
+                        label_cat[lbl].set("abandon")
+
+        def _save():
+            new_mapping: Dict[str, List[str]] = {cat: [] for cat in self._CATEGORIES}
+            for lbl, var in label_cat.items():
+                new_mapping[var.get()].append(lbl)
+            if self._save_layout_mapping(new_mapping):
+                messagebox.showinfo("Saved",
+                                    "Layout label settings saved to config.yaml.\n"
+                                    "Changes take effect on the next OCR run.",
+                                    parent=dlg)
+                dlg.destroy()
+
+        ttk.Button(foot, text="Reset Defaults", command=_reset).pack(side=tk.LEFT)
+        ttk.Button(foot, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(foot, text="Save", command=_save).pack(side=tk.RIGHT)
+
     def _build_action(self, parent):
         frm = ttk.LabelFrame(parent, text="Conversion", padding="10 8")
         frm.grid(row=4, column=0, sticky="ew", pady=(0, 8))
