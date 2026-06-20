@@ -6079,7 +6079,11 @@ class ConverterSuiteApp(tk.Tk):
 
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        def _on_mousewheel(e):
+            if canvas.winfo_exists():
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Column headers
         for c_idx, (txt, fg) in enumerate([("Label", T), ("Category", T), ("Preview", M)]):
@@ -6130,6 +6134,10 @@ class ConverterSuiteApp(tk.Tk):
                     else:
                         label_cat[lbl].set("abandon")
 
+        def _close():
+            canvas.unbind_all("<MouseWheel>")
+            dlg.destroy()
+
         def _save():
             new_mapping: Dict[str, List[str]] = {cat: [] for cat in self._CATEGORIES}
             for lbl, var in label_cat.items():
@@ -6139,10 +6147,11 @@ class ConverterSuiteApp(tk.Tk):
                                     "Layout label settings saved to config.yaml.\n"
                                     "Changes take effect on the next OCR run.",
                                     parent=dlg)
-                dlg.destroy()
+                _close()
 
+        dlg.protocol("WM_DELETE_WINDOW", _close)
         ttk.Button(foot, text="Reset Defaults", command=_reset).pack(side=tk.LEFT)
-        ttk.Button(foot, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(foot, text="Cancel", command=_close).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(foot, text="Save", command=_save).pack(side=tk.RIGHT)
 
     def _build_action(self, parent):
